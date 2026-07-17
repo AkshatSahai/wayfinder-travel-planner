@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Compass, Sparkles, MapPin, Wallet, CalendarRange, LogIn } from "lucide-react";
+import { Compass, Sparkles, MapPin, Wallet, CalendarRange, LogIn, LogOut } from "lucide-react";
 
 import { parseTripPrompt } from "@/lib/trip-ai.functions";
 import { createTrip } from "@/lib/trips.functions";
@@ -35,9 +35,18 @@ export const Route = createFileRoute("/")({
 
 function Landing() {
   const [prompt, setPrompt] = useState("");
+  const [signedIn, setSignedIn] = useState(false);
   const navigate = useNavigate();
   const parseFn = useServerFn(parseTripPrompt);
   const createFn = useServerFn(createTrip);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSignedIn(!!session);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
   const mutation = useMutation({
     mutationFn: async (raw: string) => {
@@ -103,12 +112,19 @@ function Landing() {
           <Link to="/trips" className="text-sm text-muted-foreground hover:text-foreground">
             My trips
           </Link>
-          <Link to="/auth" search={{ redirect: "/" }}>
-            <Button variant="ghost" size="sm">
-              <LogIn className="mr-1 h-4 w-4" />
-              Sign in
+          {signedIn ? (
+            <Button variant="ghost" size="sm" onClick={() => supabase.auth.signOut()}>
+              <LogOut className="mr-1 h-4 w-4" />
+              Sign out
             </Button>
-          </Link>
+          ) : (
+            <Link to="/auth" search={{ redirect: "/" }}>
+              <Button variant="ghost" size="sm">
+                <LogIn className="mr-1 h-4 w-4" />
+                Sign in
+              </Button>
+            </Link>
+          )}
         </nav>
       </header>
 

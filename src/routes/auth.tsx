@@ -23,6 +23,13 @@ export const Route = createFileRoute("/auth")({
   component: AuthPage,
 });
 
+// Where to land after auth. "/" only matters when a trip prompt is waiting to
+// be replayed on the landing page; otherwise the trips list is the useful home.
+function postAuthTarget(redirect: string | undefined): string {
+  if (!redirect || (redirect === "/" && !sessionStorage.getItem("pendingPrompt"))) return "/trips";
+  return redirect;
+}
+
 function AuthPage() {
   const { redirect } = Route.useSearch();
   const navigate = useNavigate();
@@ -33,7 +40,7 @@ function AuthPage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: redirect ?? "/trips" });
+      if (data.session) navigate({ to: postAuthTarget(redirect) });
     });
   }, [navigate, redirect]);
 
@@ -49,7 +56,7 @@ function AuthPage() {
         redirect_uri: window.location.origin + "/auth",
       });
       if (res.error) toast.error(res.error.message);
-      if (!res.redirected && !res.error) navigate({ to: redirect ?? "/trips" });
+      if (!res.redirected && !res.error) navigate({ to: postAuthTarget(redirect) });
       return;
     }
 
@@ -77,7 +84,7 @@ function AuthPage() {
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        navigate({ to: redirect ?? "/trips" });
+        navigate({ to: postAuthTarget(redirect) });
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Auth failed");
