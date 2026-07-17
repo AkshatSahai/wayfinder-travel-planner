@@ -1,5 +1,37 @@
 # Wayfinder Changelog
 
+## v0.1.1 — 2026-07-17
+
+### Overview
+
+Live-data enablement release: the Destination map, live regional gas prices, and hotel search were switched on with real API credentials. During verification we confirmed that TravelPayouts has discontinued its hotel API entirely, so hotel search now reports its status honestly while manual "Add your stay" remains the primary lodging flow.
+
+### Updates
+
+#### New Features
+
+**Live Google Map on the Destination tab**
+
+- _Technical:_ `VITE_GOOGLE_MAPS_KEY` (browser key, referrer-restricted, Maps JavaScript + Places + Directions APIs) is now configured in Vercel and local env, activating the `@vis.gl/react-google-maps` panel: floating card markers, primary + alternate routes, and clickable waypoints.
+- _For everyone:_ The map on the Destination tab is now a real, interactive Google Map instead of a placeholder — suggestions appear as cards on the map, and your driving route (with stops) draws right on it.
+
+**Live regional gas prices**
+
+- _Technical:_ `EIA_API_KEY` configured; the Drive comparison card now pulls the current week's regular-gasoline retail price for the origin's PADD region from the EIA v2 API (verified live: PADD 2 pricing), with the manual $/gal input as an override.
+- _For everyone:_ Driving cost estimates now use this week's actual pump prices for your part of the country, updated automatically.
+
+#### Bug Fixes
+
+**Hotel search reports the real provider status**
+
+- _Technical:_ Verification with a valid partner token confirmed every Hotellook/TravelPayouts hotel endpoint returns 404 — the API has been discontinued upstream, not misconfigured. With the token present, the panel now correctly shows the "unavailable + Retry" state rather than a missing-key setup card.
+- _For everyone:_ The hotel-search section now tells the truth: the hotel data supplier shut down their service. Adding your own stay (Airbnb, VRBO, hotels) is the main flow and works fully; a replacement live hotel source is on the roadmap.
+
+#### Upcoming
+
+- **Replacement hotel data source** (e.g. Booking.com via RapidAPI or Amadeus) now that TravelPayouts is confirmed discontinued.
+- Smart paste for Airbnb/VRBO/Amtrak links; Itinerary and Activities redesigns.
+
 ## v0.1.0 — 2026-07-17
 
 ### Overview
