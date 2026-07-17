@@ -1,8 +1,11 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 
 // Provider fallback chain:
 //   1. LOVABLE_API_KEY  → Lovable AI gateway (auto-provisioned inside Lovable Cloud)
-//   2. GEMINI_API_KEY   → Google AI Studio's OpenAI-compatible endpoint (free tier)
+//   2. GEMINI_API_KEY   → official Google provider (native structured outputs —
+//      Google's OpenAI-compatible endpoint silently drops JSON-schema enforcement,
+//      which breaks Output.object validation)
 // Model ids differ per provider ("google/gemini-…" vs "gemini-…"); AI_MODEL overrides.
 
 const LOVABLE_MODEL = "google/gemini-3-flash-preview";
@@ -23,11 +26,7 @@ export function createGateway() {
 
   const geminiKey = process.env.GEMINI_API_KEY;
   if (geminiKey) {
-    return createOpenAICompatible({
-      name: "google",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-      apiKey: geminiKey,
-    });
+    return createGoogleGenerativeAI({ apiKey: geminiKey });
   }
 
   throw new Error("GEMINI_API_KEY missing");
