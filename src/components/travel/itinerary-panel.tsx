@@ -50,7 +50,7 @@ export function ItineraryPanel({ items, numDays, startDate, onAdd, onRemove }: P
           : null;
 
         return (
-          <div key={dayIdx} className="rounded-xl border border-border bg-card p-4 shadow-soft">
+          <div key={dayIdx} className="rounded-2xl border border-border bg-card p-4 shadow-soft">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="font-display font-semibold">
                 Day {dayIdx + 1}{" "}

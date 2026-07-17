@@ -16,6 +16,21 @@ const KEY_INFO: Record<string, { provider: string; signupUrl: string; signupLabe
     signupUrl: "https://developer.ticketmaster.com",
     signupLabel: "developer.ticketmaster.com — free key",
   },
+  TRAVELPAYOUTS_API_KEY: {
+    provider: "TravelPayouts (live hotel search)",
+    signupUrl: "https://www.travelpayouts.com",
+    signupLabel: "travelpayouts.com — free partner token",
+  },
+  EIA_API_KEY: {
+    provider: "EIA (live regional gas prices)",
+    signupUrl: "https://www.eia.gov/opendata/",
+    signupLabel: "eia.gov/opendata — free key",
+  },
+  VITE_GOOGLE_MAPS_KEY: {
+    provider: "Google Maps (map panel, routes, waypoints)",
+    signupUrl: "https://console.cloud.google.com/google/maps-apis",
+    signupLabel: "Google Cloud — browser key with Maps JS + Places + Directions",
+  },
 };
 
 export function ProviderSetupCard({ missingKey }: { missingKey: string }) {

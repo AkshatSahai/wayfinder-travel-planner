@@ -1,17 +1,15 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
 import { toast } from "sonner";
-import { Compass, ChevronLeft, MapPin, Bed, Car, Sparkles, CalendarRange } from "lucide-react";
+import { z } from "zod";
+import { ChevronLeft } from "lucide-react";
 
 import { getTrip, updateTrip, addTripItem, removeTripItem } from "@/lib/trips.functions";
 import { getRecommendations } from "@/lib/trip-ai.functions";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { formatMoney, daysBetween } from "@/lib/workspace-store";
+import { daysBetween } from "@/lib/workspace-store";
+import { AppSidebar, type WorkspaceTab } from "@/components/shell/app-sidebar";
+import { TripMetaBar } from "@/components/shell/trip-meta-bar";
 
 import { DestinationPanel } from "@/components/travel/destination-panel";
 import { LodgingPanel } from "@/components/travel/lodging-panel";
@@ -21,7 +19,10 @@ import { ItineraryPanel } from "@/components/travel/itinerary-panel";
 import { BudgetRail } from "@/components/travel/budget-rail";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
 
+const TABS = ["destination", "lodging", "transport", "activities", "itinerary"] as const;
+
 export const Route = createFileRoute("/_authenticated/trips/$tripId")({
+  validateSearch: (s) => z.object({ tab: z.enum(TABS).optional() }).parse(s),
   head: ({ params }) => ({
     meta: [
       { title: `Trip ${params.tripId.slice(0, 8)} — Wayfinder` },
@@ -33,16 +34,17 @@ export const Route = createFileRoute("/_authenticated/trips/$tripId")({
 
 function WorkspacePage() {
   const { tripId } = Route.useParams();
+  const { tab: tabParam } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const tab: WorkspaceTab = tabParam ?? "destination";
+  const setTab = (t: WorkspaceTab) => navigate({ search: { tab: t }, replace: true });
+
   const qc = useQueryClient();
   const getFn = useServerFn(getTrip);
   const updateFn = useServerFn(updateTrip);
   const addFn = useServerFn(addTripItem);
   const removeFn = useServerFn(removeTripItem);
   const recFn = useServerFn(getRecommendations);
-
-  const [tab, setTab] = useState<
-    "destination" | "lodging" | "transport" | "activities" | "itinerary"
-  >("destination");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["trip", tripId],
@@ -103,6 +105,7 @@ function WorkspacePage() {
     interests?: string[];
     travel_mode?: "car" | "flight" | "train" | "unknown" | null;
     missing_fields?: string[];
+    waypoints?: string[];
   };
 
   const totalCents = items.reduce((s, i) => s + (i.cost_cents ?? 0), 0);
@@ -110,8 +113,12 @@ function WorkspacePage() {
   const destination = trip.destination ?? parsed.destination ?? "";
   const origin = parsed.origin ?? "";
   const interests = parsed.interests ?? [];
+  const waypoints = parsed.waypoints ?? [];
 
   const handleAdd = (item: Omit<NewItem, "trip_id">) => addMut.mutate({ ...item, trip_id: tripId });
+
+  const updateWaypoints = (next: string[]) =>
+    updateMut.mutate({ parsed_params: { ...parsed, waypoints: next } });
 
   const refreshTips = () =>
     recMut.mutate({
@@ -129,134 +136,97 @@ function WorkspacePage() {
           .join("\n") || "(empty)",
     });
 
+  const rail = (
+    <BudgetRail
+      items={items}
+      budgetCents={trip.budget_cents}
+      currency={trip.currency}
+      onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
+      tips={recMut.data?.tips}
+      onRefreshTips={refreshTips}
+      tipsLoading={recMut.isPending}
+    />
+  );
+
   return (
-    <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-4">
+    <div className="flex min-h-screen bg-background max-lg:flex-col">
+      <AppSidebar tab={tab} onNavigate={setTab} />
+
+      <main className="min-w-0 flex-1 px-6 py-5">
+        <div className="mx-auto max-w-7xl">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <TripMetaBar trip={trip} />
             <Link
               to="/trips"
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
             >
-              <ChevronLeft className="h-4 w-4" /> Trips
-            </Link>
-            <Link to="/" className="flex items-center gap-2 font-display text-lg font-semibold">
-              <Compass className="h-5 w-5 text-primary" /> Wayfinder
+              <ChevronLeft className="h-4 w-4" /> All trips
             </Link>
           </div>
-          <div className="text-right">
-            <h1 className="font-display text-lg font-semibold leading-tight">{trip.title}</h1>
-            {destination && (
-              <p className="text-xs text-muted-foreground">
-                {destination}
-                {trip.start_date && ` · ${trip.start_date} → ${trip.end_date}`}
-              </p>
-            )}
-          </div>
-        </div>
-      </header>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-6 py-6 lg:grid-cols-[1fr_320px]">
-        <div>
           <MissingFieldsBanner trip={trip} onSave={(patch) => updateMut.mutate(patch)} />
 
-          <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-            <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="destination">
-                <MapPin className="mr-1 h-4 w-4" />
-                Destination
-              </TabsTrigger>
-              <TabsTrigger value="lodging">
-                <Bed className="mr-1 h-4 w-4" />
-                Lodging
-              </TabsTrigger>
-              <TabsTrigger value="transport">
-                <Car className="mr-1 h-4 w-4" />
-                Transport
-              </TabsTrigger>
-              <TabsTrigger value="activities">
-                <Sparkles className="mr-1 h-4 w-4" />
-                Activities
-              </TabsTrigger>
-              <TabsTrigger value="itinerary">
-                <CalendarRange className="mr-1 h-4 w-4" />
-                Itinerary
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="destination" className="mt-4">
-              <DestinationPanel
-                parsed={parsed as Parameters<typeof DestinationPanel>[0]["parsed"]}
-                current={destination}
-                origin={origin}
-                startDate={trip.start_date}
-                endDate={trip.end_date}
-                partySize={trip.party_size ?? 2}
-                interests={interests}
-                travelMode={parsed.travel_mode ?? null}
-                onPick={(name) => updateMut.mutate({ destination: name, title: name })}
-                onNavigate={(t) => setTab(t)}
-              />
-            </TabsContent>
-
-            <TabsContent value="lodging" className="mt-4">
-              <LodgingPanel
-                destination={destination}
-                startDate={trip.start_date}
-                endDate={trip.end_date}
-                partySize={trip.party_size ?? 2}
-                interests={interests}
-                budgetCents={trip.budget_cents}
-                onAdd={(item) => handleAdd(item)}
-              />
-            </TabsContent>
-
-            <TabsContent value="transport" className="mt-4">
-              <TransportPanel
-                origin={origin}
-                destination={destination}
-                mode={parsed.travel_mode ?? null}
-                partySize={trip.party_size ?? 2}
-                startDate={trip.start_date}
-                endDate={trip.end_date}
-                onAdd={(item) => handleAdd(item)}
-              />
-            </TabsContent>
-
-            <TabsContent value="activities" className="mt-4">
-              <ActivitiesPanel
-                destination={destination}
-                interests={interests}
-                startDate={trip.start_date}
-                endDate={trip.end_date}
-                partySize={trip.party_size ?? 2}
-                numDays={numDays}
-                onAdd={(item) => handleAdd(item)}
-              />
-            </TabsContent>
-
-            <TabsContent value="itinerary" className="mt-4">
-              <ItineraryPanel
-                items={items}
-                numDays={numDays}
-                startDate={trip.start_date}
-                onAdd={(item) => handleAdd(item)}
-                onRemove={(id) => removeMut.mutate(id)}
-              />
-            </TabsContent>
-          </Tabs>
+          {tab === "destination" ? (
+            <DestinationPanel
+              parsed={parsed as Parameters<typeof DestinationPanel>[0]["parsed"]}
+              current={destination}
+              origin={origin}
+              waypoints={waypoints}
+              onPick={(name) => updateMut.mutate({ destination: name, title: name })}
+              onUpdateWaypoints={updateWaypoints}
+            />
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+              <div className="min-w-0">
+                {tab === "lodging" && (
+                  <LodgingPanel
+                    destination={destination}
+                    startDate={trip.start_date}
+                    endDate={trip.end_date}
+                    partySize={trip.party_size ?? 2}
+                    interests={interests}
+                    budgetCents={trip.budget_cents}
+                    onAdd={(item) => handleAdd(item)}
+                  />
+                )}
+                {tab === "transport" && (
+                  <TransportPanel
+                    origin={origin}
+                    destination={destination}
+                    mode={parsed.travel_mode ?? null}
+                    partySize={trip.party_size ?? 2}
+                    startDate={trip.start_date}
+                    endDate={trip.end_date}
+                    waypoints={waypoints}
+                    onAdd={(item) => handleAdd(item)}
+                  />
+                )}
+                {tab === "activities" && (
+                  <ActivitiesPanel
+                    destination={destination}
+                    interests={interests}
+                    startDate={trip.start_date}
+                    endDate={trip.end_date}
+                    partySize={trip.party_size ?? 2}
+                    numDays={numDays}
+                    onAdd={(item) => handleAdd(item)}
+                  />
+                )}
+                {tab === "itinerary" && (
+                  <ItineraryPanel
+                    items={items}
+                    numDays={numDays}
+                    startDate={trip.start_date}
+                    onAdd={(item) => handleAdd(item)}
+                    onRemove={(id) => removeMut.mutate(id)}
+                  />
+                )}
+              </div>
+              {rail}
+            </div>
+          )}
         </div>
-
-        <BudgetRail
-          items={items}
-          budgetCents={trip.budget_cents}
-          currency={trip.currency}
-          onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
-          tips={recMut.data?.tips}
-          onRefreshTips={refreshTips}
-          tipsLoading={recMut.isPending}
-        />
-      </div>
+      </main>
     </div>
   );
 }

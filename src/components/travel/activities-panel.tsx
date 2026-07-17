@@ -67,7 +67,7 @@ export function ActivitiesPanel({
 
   if (!destination)
     return (
-      <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted-foreground">
+      <div className="rounded-2xl border border-dashed border-border p-12 text-center text-muted-foreground">
         Pick a destination first.
       </div>
     );
@@ -110,7 +110,7 @@ export function ActivitiesPanel({
 
           {data?.events_missing_key && <ProviderSetupCard missingKey={data.events_missing_key} />}
           {data?.events_error && !data.events_missing_key && (data.events.length ?? 0) === 0 && (
-            <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            <div className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
               {data.events_error}
             </div>
           )}
@@ -121,7 +121,7 @@ export function ActivitiesPanel({
               return (
                 <div
                   key={e.id}
-                  className="overflow-hidden rounded-xl border border-border bg-card shadow-soft"
+                  className="overflow-hidden rounded-2xl border border-border bg-card shadow-soft"
                 >
                   {e.photo_url && (
                     <img
@@ -207,7 +207,7 @@ export function ActivitiesPanel({
 
           {data?.places_missing_key && <ProviderSetupCard missingKey={data.places_missing_key} />}
           {data?.places_error && !data.places_missing_key && places.length === 0 && (
-            <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            <div className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
               {data.places_error}
             </div>
           )}
@@ -216,7 +216,7 @@ export function ActivitiesPanel({
             {places.map((a) => (
               <div
                 key={a.name}
-                className="overflow-hidden rounded-xl border border-border bg-card shadow-soft"
+                className="overflow-hidden rounded-2xl border border-border bg-card shadow-soft"
               >
                 {a.photo_url && (
                   <img

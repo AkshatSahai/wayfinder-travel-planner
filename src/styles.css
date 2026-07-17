@@ -37,10 +37,15 @@
   --color-sea: var(--sea);
   --color-forest: var(--forest);
   --color-sunset: var(--sunset);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-active: var(--sidebar-active);
   --font-display: "Fraunces", ui-serif, Georgia, serif;
   --shadow-soft: 0 2px 20px -4px oklch(0.35 0.05 220 / 0.12);
-  --shadow-glow: 0 8px 40px -8px oklch(0.55 0.15 200 / 0.35);
-  --gradient-hero: linear-gradient(135deg, oklch(0.62 0.13 200) 0%, oklch(0.7 0.14 165) 50%, oklch(0.78 0.14 85) 100%);
+  --shadow-card: 0 4px 16px -6px oklch(0.3 0.04 160 / 0.18);
+  --shadow-glow: 0 8px 40px -8px oklch(0.45 0.1 160 / 0.35);
+  --gradient-hero: linear-gradient(135deg, #123526 0%, #1d5a41 55%, #3e7d5f 100%);
   --gradient-card: linear-gradient(180deg, oklch(1 0 0 / 0.6) 0%, oklch(1 0 0 / 0.9) 100%);
 }
 
@@ -52,7 +57,7 @@
   --card-foreground: oklch(0.22 0.03 220);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.22 0.03 220);
-  --primary: oklch(0.55 0.15 200);
+  --primary: oklch(0.45 0.09 160);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.94 0.02 85);
   --secondary-foreground: oklch(0.3 0.05 220);
@@ -68,11 +73,15 @@
   --warning-foreground: oklch(0.25 0.05 60);
   --border: oklch(0.9 0.015 90);
   --input: oklch(0.92 0.015 90);
-  --ring: oklch(0.55 0.15 200);
+  --ring: oklch(0.45 0.09 160);
   --sand: oklch(0.94 0.03 85);
   --sea: oklch(0.55 0.15 200);
   --forest: oklch(0.5 0.12 155);
   --sunset: oklch(0.7 0.18 40);
+  --sidebar: #123526;
+  --sidebar-foreground: #ffffff;
+  --sidebar-muted: #a9c4b7;
+  --sidebar-active: #1d5a41;
 }
 
 .dark {
@@ -102,15 +111,32 @@
 }
 
 @layer base {
-  * { border-color: var(--color-border); }
+  * {
+    border-color: var(--color-border);
+  }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-feature-settings: "ss01", "cv11";
   }
-  h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
 }
 
-@utility bg-hero { background-image: var(--gradient-hero); }
-@utility shadow-glow { box-shadow: var(--shadow-glow); }
-@utility shadow-soft { box-shadow: var(--shadow-soft); }
+@utility bg-hero {
+  background-image: var(--gradient-hero);
+}
+@utility shadow-glow {
+  box-shadow: var(--shadow-glow);
+}
+@utility shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}

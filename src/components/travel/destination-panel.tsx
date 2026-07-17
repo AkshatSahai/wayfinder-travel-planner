@@ -1,23 +1,21 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { suggestDestinations, searchTransport, searchLodging } from "@/lib/trip-ai.functions";
+import { suggestDestinations, chatDestinations, topPlaces } from "@/lib/trip-ai.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { formatMoney, daysBetween } from "@/lib/workspace-store";
+import { DestinationMap, type MapCardPin } from "./destination-map";
+import { ProviderSetupCard } from "./provider-setup-card";
 import {
   Sparkles,
   Check,
   MapPin,
-  CalendarRange,
-  Users,
-  Car,
-  Plane,
-  TrainFront,
-  Bed,
-  ArrowRight,
   AlertCircle,
   Pencil,
+  SendHorizonal,
+  Star,
+  X,
+  ExternalLink,
 } from "lucide-react";
 
 type Parsed = {
@@ -35,48 +33,30 @@ type Parsed = {
   missing_fields: string[];
 };
 
+type Candidate = {
+  name: string;
+  region: string;
+  match_score: number;
+  rationale: string;
+  best_for: string[];
+  hero_tagline: string;
+  lat: number;
+  lng: number;
+};
+
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
 interface Props {
   parsed: Parsed;
   current: string;
   origin: string;
-  startDate: string | null;
-  endDate: string | null;
-  partySize: number;
-  interests: string[];
-  travelMode: "car" | "flight" | "train" | "unknown" | null;
+  waypoints: string[];
   onPick: (name: string) => void;
-  onNavigate: (tab: "lodging" | "transport" | "activities" | "itinerary") => void;
+  onUpdateWaypoints: (waypoints: string[]) => void;
 }
 
-export function DestinationPanel(props: Props) {
-  const [showPicker, setShowPicker] = useState(false);
-  if (!props.current || showPicker) {
-    return (
-      <DestinationPicker
-        {...props}
-        onPick={(name) => {
-          props.onPick(name);
-          setShowPicker(false);
-        }}
-        onCancel={props.current ? () => setShowPicker(false) : undefined}
-      />
-    );
-  }
-  return <DestinationOverview {...props} onChangeDestination={() => setShowPicker(true)} />;
-}
-
-// ---------- Picker ----------
-
-function DestinationPicker({
-  parsed,
-  current,
-  onPick,
-  onCancel,
-}: Props & { onCancel?: () => void }) {
-  const fn = useServerFn(suggestDestinations);
-  const [manual, setManual] = useState("");
-  // Normalize so trips saved before schema changes still validate server-side.
-  const normalized = {
+function normalizeParsed(parsed: Parsed) {
+  return {
     destination: parsed.destination ?? null,
     region_hint: parsed.region_hint ?? null,
     origin: parsed.origin ?? null,
@@ -90,365 +70,425 @@ function DestinationPicker({
     notes: parsed.notes ?? null,
     missing_fields: parsed.missing_fields ?? [],
   };
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+}
+
+export function DestinationPanel({
+  parsed,
+  current,
+  origin,
+  waypoints,
+  onPick,
+  onUpdateWaypoints,
+}: Props) {
+  const [showPicker, setShowPicker] = useState(false);
+  const picking = !current || showPicker;
+
+  const suggestFn = useServerFn(suggestDestinations);
+  const chatFn = useServerFn(chatDestinations);
+  const sightsFn = useServerFn(topPlaces);
+
+  const normalized = normalizeParsed(parsed);
+
+  const candidatesQ = useQuery({
     queryKey: [
       "destinations",
       normalized.destination,
       normalized.region_hint,
       normalized.interests.join(","),
     ],
-    queryFn: () => fn({ data: { parsed: normalized } }),
+    queryFn: () => suggestFn({ data: { parsed: normalized } }),
+    enabled: picking,
     staleTime: Infinity,
     retry: false,
   });
 
-  const empty = !isLoading && !isError && (data?.destinations.length ?? 0) === 0;
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatResults, setChatResults] = useState<Candidate[] | null>(null);
+
+  const chatMut = useMutation({
+    mutationFn: (allMessages: ChatMessage[]) =>
+      chatFn({
+        data: {
+          messages: allMessages,
+          parsed: normalized,
+          current_destinations: (chatResults ?? candidatesQ.data?.destinations ?? []).map(
+            (d) => d.name,
+          ),
+        },
+      }),
+    onSuccess: (res) => {
+      setMessages((m) => [...m, { role: "assistant", content: res.reply }]);
+      if (res.destinations.length > 0) setChatResults(res.destinations);
+    },
+    onError: (err: Error) => {
+      setMessages((m) => [...m, { role: "assistant", content: err.message }]);
+    },
+  });
+
+  const sendChat = () => {
+    const text = chatInput.trim();
+    if (!text || chatMut.isPending) return;
+    const next: ChatMessage[] = [...messages, { role: "user" as const, content: text }];
+    setMessages(next);
+    setChatInput("");
+    chatMut.mutate(next);
+  };
+
+  const sightsQ = useQuery({
+    queryKey: ["top-sights", current],
+    queryFn: () => sightsFn({ data: { destination: current } }),
+    enabled: !picking && current.length > 0,
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  const candidates = chatResults ?? candidatesQ.data?.destinations ?? [];
+
+  const pins: MapCardPin[] = picking
+    ? candidates.map((c) => ({
+        id: c.name,
+        name: c.name,
+        subtitle: c.region,
+        lat: c.lat,
+        lng: c.lng,
+      }))
+    : (sightsQ.data?.sights ?? [])
+        .filter((s) => s.lat != null && s.lng != null)
+        .map((s) => ({
+          id: s.name,
+          name: s.name,
+          subtitle: s.rating ? `★ ${s.rating}` : "Attraction",
+          photo_url: s.photo_url,
+          lat: s.lat!,
+          lng: s.lng!,
+        }));
+
+  const addStop = (name: string) => {
+    if (waypoints.includes(name) || waypoints.length >= 10) return;
+    onUpdateWaypoints([...waypoints, name]);
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-display text-xl font-semibold">Pick your area</h2>
-          <p className="text-sm text-muted-foreground">
-            Ranked to your interests. Tap to lock it in.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {onCancel && (
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-            <Sparkles className="mr-1 h-4 w-4" /> {isFetching ? "…" : "Re-curate"}
-          </Button>
-        </div>
-      </div>
-
-      {(isLoading || isFetching) && <SkeletonList />}
-
-      {(isError || empty) && !isFetching && (
-        <div className="rounded-xl border border-warning/40 bg-warning/10 p-6 text-center">
-          <AlertCircle className="mx-auto h-5 w-5 text-warning-foreground" />
-          <p className="mt-2 text-sm font-medium">
-            {isError ? "Destination suggestions failed" : "No suggestions came back"}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {isError
-              ? error instanceof Error
-                ? error.message
-                : "The AI service returned an error."
-              : "Try again, or type your destination below."}
-          </p>
-          <Button size="sm" variant="outline" className="mt-3" onClick={() => refetch()}>
-            Retry
-          </Button>
-        </div>
-      )}
-
-      <div className="grid gap-3 md:grid-cols-2">
-        {data?.destinations.map((d) => {
-          const isCurrent = current === d.name;
-          return (
-            <button
-              key={d.name}
-              onClick={() => onPick(d.name)}
-              className={`group rounded-xl border p-4 text-left shadow-soft transition-all hover:shadow-glow ${isCurrent ? "border-primary bg-primary/5" : "border-border bg-card"}`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h3 className="font-display text-lg font-semibold">{d.name}</h3>
-                  <p className="text-xs text-muted-foreground">{d.region}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                    {d.match_score}
-                  </span>
-                  {isCurrent && <Check className="h-4 w-4 text-primary" />}
-                </div>
+    <div className="grid h-full gap-4 xl:grid-cols-[minmax(360px,1fr)_minmax(380px,1.1fr)]">
+      {/* ---------- Center: chat + lists ---------- */}
+      <div className="min-w-0 space-y-4">
+        {picking ? (
+          <>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-xl font-semibold">Pick your area</h2>
+                <p className="text-sm text-muted-foreground">
+                  Chat to refine, or tap a suggestion to lock it in.
+                </p>
               </div>
-              <p className="mt-2 text-sm italic text-muted-foreground">"{d.hero_tagline}"</p>
-              <p className="mt-2 text-sm">{d.rationale}</p>
-              <div className="mt-3 flex flex-wrap gap-1">
-                {d.best_for.map((b) => (
-                  <span key={b} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-                    {b}
+              <div className="flex gap-2">
+                {current && (
+                  <Button variant="ghost" size="sm" onClick={() => setShowPicker(false)}>
+                    Cancel
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setChatResults(null);
+                    candidatesQ.refetch();
+                  }}
+                  disabled={candidatesQ.isFetching}
+                >
+                  <Sparkles className="mr-1 h-4 w-4" /> {candidatesQ.isFetching ? "…" : "Re-curate"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Chat refinement */}
+            <div
+              className="rounded-2xl border border-border bg-card p-4 shadow-soft"
+              data-testid="destination-chat"
+            >
+              <div className="max-h-56 space-y-2 overflow-y-auto">
+                {messages.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Tell me what matters — “more secluded”, “closer to {origin || "home"}”, “better
+                    food scene” — and I'll re-rank the list.
+                  </p>
+                )}
+                {messages.map((m, i) => (
+                  <div
+                    key={i}
+                    className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                      m.role === "user"
+                        ? "ml-auto bg-sidebar-active text-white"
+                        : "bg-muted text-foreground"
+                    }`}
+                  >
+                    {m.content}
+                  </div>
+                ))}
+                {chatMut.isPending && (
+                  <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+                    …
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Input
+                  placeholder="Refine your destination…"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") sendChat();
+                  }}
+                />
+                <Button
+                  size="icon"
+                  onClick={sendChat}
+                  disabled={!chatInput.trim() || chatMut.isPending}
+                >
+                  <SendHorizonal className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            {(candidatesQ.isLoading || candidatesQ.isFetching) && <SkeletonList />}
+
+            {(candidatesQ.isError ||
+              (!candidatesQ.isLoading && !candidatesQ.isFetching && candidates.length === 0)) && (
+              <div className="rounded-2xl border border-warning/40 bg-warning/10 p-6 text-center">
+                <AlertCircle className="mx-auto h-5 w-5 text-warning-foreground" />
+                <p className="mt-2 text-sm font-medium">
+                  {candidatesQ.isError
+                    ? "Destination suggestions failed"
+                    : "No suggestions came back"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {candidatesQ.isError && candidatesQ.error instanceof Error
+                    ? candidatesQ.error.message
+                    : "Try again, or type your destination below."}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
+                  onClick={() => candidatesQ.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+
+            <div className="grid gap-3">
+              {candidates.map((d) => {
+                const isCurrent = current === d.name;
+                return (
+                  <button
+                    key={d.name}
+                    onClick={() => {
+                      onPick(d.name);
+                      setShowPicker(false);
+                    }}
+                    className={`group rounded-2xl border p-4 text-left shadow-soft transition-all hover:shadow-card ${isCurrent ? "border-primary bg-primary/5" : "border-border bg-card"}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="font-display text-lg font-semibold">{d.name}</h3>
+                        <p className="text-xs text-muted-foreground">{d.region}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                          {d.match_score}
+                        </span>
+                        {isCurrent && <Check className="h-4 w-4 text-primary" />}
+                      </div>
+                    </div>
+                    <p className="mt-2 text-sm italic text-muted-foreground">"{d.hero_tagline}"</p>
+                    <p className="mt-2 text-sm">{d.rationale}</p>
+                    <div className="mt-3 flex flex-wrap gap-1">
+                      {d.best_for.map((b) => (
+                        <span key={b} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+                          {b}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="rounded-2xl border border-dashed border-border p-4">
+              <p className="mb-2 text-sm font-medium">Or type your destination</p>
+              <ManualDestination
+                onPick={(name) => {
+                  onPick(name);
+                  setShowPicker(false);
+                }}
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 font-display text-xl font-semibold">
+                  <MapPin className="h-5 w-5 text-primary" /> {current}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Top places to visit, live from Google Places.
+                </p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setShowPicker(true)}>
+                <Pencil className="mr-1 h-3 w-3" /> Change destination
+              </Button>
+            </div>
+
+            {/* Route stops */}
+            <div className="rounded-2xl border border-border bg-card p-4 shadow-soft">
+              <p className="text-sm font-medium">Stops along your route</p>
+              <p className="text-xs text-muted-foreground">
+                Add stops from the map or list — the Transport tab's driving cost includes them.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="waypoint-chips">
+                {waypoints.length === 0 && (
+                  <span className="text-xs text-muted-foreground">No stops yet.</span>
+                )}
+                {waypoints.map((w) => (
+                  <span
+                    key={w}
+                    className="inline-flex items-center gap-1 rounded-full bg-sidebar-active/10 px-2.5 py-1 text-xs font-medium text-primary"
+                  >
+                    {w}
+                    <button onClick={() => onUpdateWaypoints(waypoints.filter((x) => x !== w))}>
+                      <X className="h-3 w-3" />
+                    </button>
                   </span>
                 ))}
               </div>
-            </button>
-          );
-        })}
+            </div>
+
+            {sightsQ.isLoading && <SkeletonList />}
+            {sightsQ.data?.missing_key && (
+              <ProviderSetupCard missingKey={sightsQ.data.missing_key} />
+            )}
+            {sightsQ.data?.error &&
+              !sightsQ.data.missing_key &&
+              (sightsQ.data.sights.length ?? 0) === 0 && (
+                <div className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                  {sightsQ.data.error}
+                  <div className="mt-2">
+                    <Button size="sm" variant="outline" onClick={() => sightsQ.refetch()}>
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+            <div className="grid gap-3">
+              {(sightsQ.data?.sights ?? []).map((s, i) => (
+                <div
+                  key={s.name}
+                  className="flex gap-3 rounded-2xl border border-border bg-card p-3 shadow-soft"
+                >
+                  {s.photo_url ? (
+                    <img
+                      src={s.photo_url}
+                      alt={s.name}
+                      loading="lazy"
+                      className="h-20 w-24 shrink-0 rounded-xl object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-20 w-24 shrink-0 items-center justify-center rounded-xl bg-muted">
+                      <MapPin className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-muted-foreground">#{i + 1}</span>
+                      <h3 className="font-semibold">{s.name}</h3>
+                      {s.rating != null && (
+                        <span className="flex items-center gap-0.5 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-600">
+                          <Star className="h-3 w-3 fill-current" />
+                          {s.rating}
+                          {s.review_count ? ` (${s.review_count})` : ""}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                      {s.description}
+                    </p>
+                    <div className="mt-1.5 flex items-center gap-3">
+                      {s.maps_url && (
+                        <a
+                          href={s.maps_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                        >
+                          Google Maps <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                      <button
+                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                        disabled={waypoints.includes(s.name)}
+                        onClick={() => addStop(s.name)}
+                      >
+                        {waypoints.includes(s.name) ? "Added as stop" : "+ Add as stop"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="rounded-xl border border-dashed border-border p-4">
-        <p className="mb-2 text-sm font-medium">Or type your destination</p>
-        <div className="flex gap-2">
-          <Input
-            placeholder="e.g. Traverse City, MI"
-            value={manual}
-            onChange={(e) => setManual(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && manual.trim()) onPick(manual.trim());
-            }}
-          />
-          <Button disabled={!manual.trim()} onClick={() => onPick(manual.trim())}>
-            Use it
-          </Button>
-        </div>
+      {/* ---------- Right: live map ---------- */}
+      <div className="min-h-[380px] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)]">
+        <DestinationMap
+          pins={pins}
+          routeDestination={picking ? null : current}
+          origin={origin || null}
+          waypoints={waypoints}
+          selectedPinId={current || null}
+          onPinClick={(p) => {
+            if (picking) {
+              onPick(p.name);
+              setShowPicker(false);
+            }
+          }}
+          onAddStop={picking ? undefined : addStop}
+        />
       </div>
+    </div>
+  );
+}
+
+function ManualDestination({ onPick }: { onPick: (name: string) => void }) {
+  const [manual, setManual] = useState("");
+  return (
+    <div className="flex gap-2">
+      <Input
+        placeholder="e.g. Traverse City, MI"
+        value={manual}
+        onChange={(e) => setManual(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && manual.trim()) onPick(manual.trim());
+        }}
+      />
+      <Button disabled={!manual.trim()} onClick={() => onPick(manual.trim())}>
+        Use it
+      </Button>
     </div>
   );
 }
 
 function SkeletonList() {
   return (
-    <div className="grid gap-3 md:grid-cols-2">
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" />
+    <div className="grid gap-3">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="h-28 animate-pulse rounded-2xl border border-border bg-muted/40" />
       ))}
     </div>
-  );
-}
-
-// ---------- Overview dashboard ----------
-
-function DestinationOverview({
-  current,
-  origin,
-  startDate,
-  endDate,
-  partySize,
-  interests,
-  travelMode,
-  onNavigate,
-  onChangeDestination,
-}: Props & { onChangeDestination: () => void }) {
-  const transportFn = useServerFn(searchTransport);
-  const lodgingFn = useServerFn(searchLodging);
-  const nights = Math.max(1, daysBetween(startDate, endDate) - 1);
-
-  // Same query keys as the Transport / Lodging tabs so each search runs once.
-  const transportQ = useQuery({
-    queryKey: ["transport", origin, current, travelMode, "28", "3.5"],
-    queryFn: () =>
-      transportFn({
-        data: {
-          origin,
-          destination: current,
-          mode: travelMode,
-          party_size: partySize,
-          start_date: startDate,
-          end_date: endDate,
-          mpg: 28,
-          fuel_price_per_gallon: 3.5,
-        },
-      }),
-    enabled: origin.length > 0 && current.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
-
-  const lodgingQ = useQuery({
-    queryKey: ["lodging", current, startDate, endDate, partySize],
-    queryFn: () =>
-      lodgingFn({
-        data: {
-          destination: current,
-          start_date: startDate,
-          end_date: endDate,
-          party_size: partySize,
-          interests,
-          budget_cents: null,
-        },
-      }),
-    enabled: current.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
-
-  const cheapest = (mode: "car" | "flight") => {
-    const opts = (transportQ.data?.options ?? []).filter((o) => o.mode === mode);
-    if (opts.length === 0) return null;
-    return opts.reduce((min, o) => (o.est_cost_cents < min.est_cost_cents ? o : min));
-  };
-  const car = cheapest("car");
-  const flight = cheapest("flight");
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-border bg-card p-5 shadow-soft">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <MapPin className="h-5 w-5 text-primary" />
-              <h2 className="font-display text-2xl font-semibold">{current}</h2>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-              {startDate && endDate && (
-                <span className="flex items-center gap-1">
-                  <CalendarRange className="h-4 w-4" />
-                  {startDate} → {endDate} · {nights} night{nights === 1 ? "" : "s"}
-                </span>
-              )}
-              <span className="flex items-center gap-1">
-                <Users className="h-4 w-4" />
-                {partySize} traveler{partySize === 1 ? "" : "s"}
-              </span>
-              {origin && (
-                <span className="flex items-center gap-1">
-                  <Car className="h-4 w-4" />
-                  from {origin}
-                </span>
-              )}
-            </div>
-            {interests.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1">
-                {interests.map((i) => (
-                  <span key={i} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-                    {i}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-          <Button variant="outline" size="sm" onClick={onChangeDestination}>
-            <Pencil className="mr-1 h-3 w-3" /> Change destination
-          </Button>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="mb-2 font-display text-lg font-semibold">Getting there at a glance</h3>
-        {!origin && (
-          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            Add where you're leaving from (banner above) to compare live transport prices.
-          </div>
-        )}
-        {origin && (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <GlanceCard
-              icon={<Car className="h-5 w-5" />}
-              title="Car"
-              loading={transportQ.isLoading}
-              price={car ? car.est_cost_cents : null}
-              caption={car ? car.details : "No driving route found"}
-              onClick={() => onNavigate("transport")}
-            />
-            <GlanceCard
-              icon={<Plane className="h-5 w-5" />}
-              title="Flight"
-              loading={transportQ.isLoading}
-              price={flight ? flight.est_cost_cents : null}
-              caption={
-                flight
-                  ? flight.label
-                  : transportQ.data?.missing_key
-                    ? "Connect Duffel for live fares"
-                    : "No live offers"
-              }
-              onClick={() => onNavigate("transport")}
-            />
-            <GlanceCard
-              icon={<TrainFront className="h-5 w-5" />}
-              title="Train"
-              loading={false}
-              price={null}
-              caption="No live pricing source — check Amtrak"
-              onClick={() => onNavigate("transport")}
-            />
-          </div>
-        )}
-      </div>
-
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="font-display text-lg font-semibold">Places to stay</h3>
-          <Button variant="ghost" size="sm" onClick={() => onNavigate("lodging")}>
-            All lodging <ArrowRight className="ml-1 h-3 w-3" />
-          </Button>
-        </div>
-        {lodgingQ.isLoading && <div className="h-32 animate-pulse rounded-xl bg-muted/40" />}
-        {lodgingQ.data?.error && lodgingQ.data.listings.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            {lodgingQ.data.error}
-          </div>
-        )}
-        <div className="grid gap-3 sm:grid-cols-3">
-          {lodgingQ.data?.listings.slice(0, 3).map((l) => (
-            <button
-              key={l.name}
-              onClick={() => onNavigate("lodging")}
-              className="overflow-hidden rounded-xl border border-border bg-card text-left shadow-soft transition-all hover:shadow-glow"
-            >
-              {l.photo_url && (
-                <img
-                  src={l.photo_url}
-                  alt={l.name}
-                  loading="lazy"
-                  className="h-28 w-full object-cover"
-                />
-              )}
-              <div className="p-3">
-                <p className="flex items-center gap-1 text-sm font-semibold">
-                  <Bed className="h-3 w-3 text-primary" />
-                  {l.name}
-                </p>
-                <p className="text-xs text-muted-foreground">{l.neighborhood}</p>
-                <p className="mt-1 text-sm font-medium">
-                  {formatMoney(l.nightly_cents)}
-                  <span className="text-xs text-muted-foreground"> / night</span>
-                </p>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => onNavigate("activities")}>
-          Browse activities & events <ArrowRight className="ml-1 h-3 w-3" />
-        </Button>
-        <Button variant="outline" onClick={() => onNavigate("itinerary")}>
-          Open itinerary <ArrowRight className="ml-1 h-3 w-3" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function GlanceCard({
-  icon,
-  title,
-  loading,
-  price,
-  caption,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  loading: boolean;
-  price: number | null;
-  caption: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-all hover:shadow-glow"
-    >
-      <div className="flex items-center gap-2 text-primary">
-        {icon}
-        <span className="font-medium text-foreground">{title}</span>
-      </div>
-      {loading ? (
-        <div className="mt-2 h-6 w-20 animate-pulse rounded bg-muted/60" />
-      ) : (
-        <div className="mt-2 font-display text-xl font-semibold">
-          {price != null ? formatMoney(price) : "—"}
-        </div>
-      )}
-      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{caption}</p>
-    </button>
   );
 }

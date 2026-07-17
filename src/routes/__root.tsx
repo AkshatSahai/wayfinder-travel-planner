@@ -20,7 +20,10 @@ function NotFoundComponent() {
       <div className="max-w-md text-center">
         <h1 className="font-display text-7xl font-semibold text-foreground">404</h1>
         <p className="mt-3 text-muted-foreground">This route hasn't been mapped yet.</p>
-        <Link to="/" className="mt-6 inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+        <Link
+          to="/"
+          className="mt-6 inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
           Back home
         </Link>
       </div>
@@ -40,10 +43,18 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
         <h1 className="font-display text-2xl font-semibold">Something went sideways</h1>
         <p className="mt-2 text-sm text-muted-foreground">{error.message}</p>
         <div className="mt-6 flex justify-center gap-2">
-          <button onClick={() => { router.invalidate(); reset(); }} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+          <button
+            onClick={() => {
+              router.invalidate();
+              reset();
+            }}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+          >
             Try again
           </button>
-          <Link to="/" className="rounded-md border border-input px-4 py-2 text-sm font-medium">Home</Link>
+          <Link to="/" className="rounded-md border border-input px-4 py-2 text-sm font-medium">
+            Home
+          </Link>
         </div>
       </div>
     </div>
@@ -56,9 +67,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "Wayfinder — AI travel planner that plans, books, and budgets" },
-      { name: "description", content: "Describe your trip in plain English. Wayfinder curates destinations, lodging, transport, and activities into a live budgeted itinerary." },
+      {
+        name: "description",
+        content:
+          "Describe your trip in plain English. Wayfinder curates destinations, lodging, transport, and activities into a live budgeted itinerary.",
+      },
       { property: "og:title", content: "Wayfinder — AI travel planner" },
-      { property: "og:description", content: "From a one-line prompt to a full day-by-day trip with live budget tracking." },
+      {
+        property: "og:description",
+        content: "From a one-line prompt to a full day-by-day trip with live budget tracking.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -67,7 +85,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap",
+      },
     ],
   }),
   shellComponent: RootShell,
@@ -79,7 +100,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <head><HeadContent /></head>
+      <head>
+        <HeadContent />
+      </head>
       <body style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
         {children}
         <Scripts />

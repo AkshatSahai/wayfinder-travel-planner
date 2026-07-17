@@ -28,8 +28,15 @@ const destinationsSchema = z.object({
       rationale: z.string(),
       best_for: z.array(z.string()),
       hero_tagline: z.string(),
+      lat: z.number(),
+      lng: z.number(),
     }),
   ),
+});
+
+const chatDestinationsSchema = z.object({
+  reply: z.string(),
+  destinations: destinationsSchema.shape.destinations,
 });
 
 const recommendationsSchema = z.object({
@@ -139,10 +146,51 @@ export const suggestDestinations = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const p = data.parsed;
     const result = await generateStructured(
-      `Suggest 5 specific destinations for this trip. Prefer real towns, resorts, or specific areas (not whole states). Rank by fit; match_score is 0-100.\n\nContext:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Party size: ${p.party_size ?? "unspecified"}\n- Travel mode: ${p.travel_mode ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n- Notes: ${p.notes ?? ""}\n\nEach hero_tagline is one short evocative line.`,
+      `Suggest 5 specific destinations for this trip. Prefer real towns, resorts, or specific areas (not whole states). Rank by fit; match_score is 0-100. lat/lng are the destination's approximate coordinates.\n\nContext:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Party size: ${p.party_size ?? "unspecified"}\n- Travel mode: ${p.travel_mode ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n- Notes: ${p.notes ?? ""}\n\nEach hero_tagline is one short evocative line.`,
       destinationsSchema,
     );
     return result ?? { destinations: [] };
+  });
+
+// -------- Destination refinement chat (AI) --------
+export const chatDestinations = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        messages: z
+          .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(2000) }))
+          .max(20),
+        parsed: parsedTripSchema,
+        current_destinations: z.array(z.string()).max(10),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const p = data.parsed;
+    const transcript = data.messages
+      .map((m) => `${m.role === "user" ? "Traveler" : "You"}: ${m.content}`)
+      .join("\n");
+    const result = await generateStructured(
+      `You are refining destination suggestions through conversation. Respond to the traveler's latest message with a short conversational "reply" (2-3 sentences max), and update "destinations" (always exactly 5, ranked, real specific places with approximate lat/lng) to reflect ALL their preferences so far.\n\nTrip context:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Leaving from: ${p.origin ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Party: ${p.party_size ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n\nCurrently suggested: ${data.current_destinations.join(", ") || "(none yet)"}\n\nConversation so far:\n${transcript}`,
+      chatDestinationsSchema,
+    );
+    return (
+      result ?? { reply: "Sorry — I couldn't process that. Try rephrasing?", destinations: [] }
+    );
+  });
+
+// -------- Top places for the Destination map (Google Places) --------
+export const topPlaces = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => z.object({ destination: z.string().min(2) }).parse(d))
+  .handler(async ({ data }) => {
+    try {
+      const { searchTopSights } = await import("./providers/google-places.server");
+      const sights = await searchTopSights(data.destination);
+      return { sights, error: null as string | null, missing_key: null as string | null };
+    } catch (err) {
+      console.error("[top-places] error:", err);
+      return { sights: [], error: errMsg(err), missing_key: missingKeyFrom(err) };
+    }
   });
 
 // -------- Lodging (TravelPayouts) --------
@@ -206,6 +254,7 @@ export const searchTransport = createServerFn({ method: "POST" })
         end_date: z.string().nullable(),
         mpg: z.number().nullable().optional(),
         fuel_price_per_gallon: z.number().nullable().optional(),
+        waypoints: z.array(z.string().max(200)).max(10).optional(),
       })
       .parse(d),
   )
@@ -221,6 +270,9 @@ export const searchTransport = createServerFn({ method: "POST" })
       source: "duffel" | "osrm";
       source_url: string | null;
       offer_id?: string;
+      fare_brand?: string | null;
+      cabin?: string;
+      stops?: number;
     };
     const options: Option[] = [];
     const errors: string[] = [];
@@ -251,23 +303,41 @@ export const searchTransport = createServerFn({ method: "POST" })
       errors.push("Add a start date to search live flights.");
     }
 
-    // Car: real route via OSRM public routing, gas cost computed locally.
+    // Car: real route via OSRM (chaining any waypoints), gas via live EIA
+    // regional price when available; the manual $/gal input overrides both.
+    let gas_source: string | null = null;
     try {
       const { getDrivingRoute } = await import("./providers/osrm.server");
-      const route = await getDrivingRoute(data.origin, data.destination);
+      const route = await getDrivingRoute(data.origin, data.destination, data.waypoints ?? []);
       if (route) {
         const mpg = data.mpg ?? 28;
-        const gas = data.fuel_price_per_gallon ?? 3.5;
+        let gas = data.fuel_price_per_gallon ?? null;
+        if (gas == null) {
+          try {
+            const { getGasPrice } = await import("./providers/eia.server");
+            const live = await getGasPrice(data.origin);
+            gas = live.price_per_gallon;
+            gas_source = `EIA weekly · ${live.region}`;
+          } catch (err) {
+            console.error("[transport] eia error:", err);
+            gas = 3.5;
+            gas_source = null;
+          }
+        }
         const roundTripMiles = route.miles_one_way * 2;
         const gallons = roundTripMiles / mpg;
         const gasCost = gallons * gas;
+        const stopsNote =
+          route.stop_count > 0
+            ? ` · ${route.stop_count} stop${route.stop_count === 1 ? "" : "s"}`
+            : "";
         options.push({
           mode: "car",
           label: `Drive round-trip (${Math.round(roundTripMiles)} mi)`,
           est_duration_hours: Math.round(route.drive_hours_one_way * 2 * 10) / 10,
           est_cost_cents: Math.round(gasCost * 100),
-          details: `${Math.round(route.miles_one_way)} mi each way · ~${route.drive_hours_one_way.toFixed(1)}h drive (OSRM route)`,
-          notes: `Gas only. Assumes ${mpg} mpg and $${gas.toFixed(2)}/gal. ${gallons.toFixed(1)} gal round-trip.`,
+          details: `${Math.round(route.miles_one_way)} mi each way · ~${route.drive_hours_one_way.toFixed(1)}h drive (OSRM route)${stopsNote}`,
+          notes: `Gas only. ${mpg} mpg at $${gas.toFixed(2)}/gal${gas_source ? ` (${gas_source})` : ""}. ${gallons.toFixed(1)} gal round-trip.`,
           source: "osrm",
           source_url: null,
         });
@@ -296,6 +366,7 @@ export const searchTransport = createServerFn({ method: "POST" })
       ai_advice: advice?.ai_advice ?? "",
       errors,
       missing_key,
+      gas_source,
     };
   });
 

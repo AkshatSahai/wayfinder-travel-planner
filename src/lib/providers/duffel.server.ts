@@ -51,6 +51,7 @@ interface DuffelSlice {
   segments: DuffelSegment[];
   origin: { iata_code: string; city_name?: string };
   destination: { iata_code: string; city_name?: string };
+  fare_brand_name?: string | null;
 }
 
 interface DuffelOffer {
@@ -83,6 +84,9 @@ export interface FlightOption {
   notes: string;
   source_url: string | null;
   offer_id: string;
+  fare_brand: string | null;
+  cabin: string;
+  stops: number;
 }
 
 export async function searchFlights(params: {
@@ -132,10 +136,11 @@ export async function searchFlights(params: {
   return offers.map((o) => {
     const totalDur = o.slices.reduce((s, sl) => s + isoDurationHours(sl.duration), 0);
     const stopsPerSlice = o.slices.map((sl) => sl.segments.length - 1);
-    const stopsLabel =
-      stopsPerSlice.every((s) => s === 0)
-        ? "nonstop"
-        : `${stopsPerSlice.reduce((a, b) => a + b, 0)} stop${stopsPerSlice.reduce((a, b) => a + b, 0) === 1 ? "" : "s"}`;
+    const totalStops = stopsPerSlice.reduce((a, b) => a + b, 0);
+    const stopsLabel = stopsPerSlice.every((s) => s === 0)
+      ? "nonstop"
+      : `${totalStops} stop${totalStops === 1 ? "" : "s"}`;
+    const fareBrand = o.slices.find((sl) => sl.fare_brand_name)?.fare_brand_name ?? null;
     const detailLines = o.slices
       .map((sl) => {
         const seg0 = sl.segments[0];
@@ -154,6 +159,9 @@ export async function searchFlights(params: {
       notes: `Total for ${params.party_size} passenger${params.party_size === 1 ? "" : "s"} · ${o.total_currency}`,
       source_url: null,
       offer_id: o.id,
+      fare_brand: fareBrand,
+      cabin: "economy",
+      stops: totalStops,
     };
   });
 }

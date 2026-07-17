@@ -32,16 +32,22 @@ export async function geocodePlace(query: string): Promise<GeoPoint | null> {
 export interface DrivingRoute {
   miles_one_way: number;
   drive_hours_one_way: number;
+  stop_count: number;
 }
 
+// Route origin → (waypoints…) → destination as one chained OSRM path.
 export async function getDrivingRoute(
   origin: string,
   destination: string,
+  waypoints: string[] = [],
 ): Promise<DrivingRoute | null> {
-  const [from, to] = await Promise.all([geocodePlace(origin), geocodePlace(destination)]);
-  if (!from || !to) return null;
+  const points = await Promise.all([origin, ...waypoints, destination].map((q) => geocodePlace(q)));
+  const located = points.filter((p): p is GeoPoint => p !== null);
+  // Origin and destination must both resolve; skip waypoints that don't.
+  if (!points[0] || !points[points.length - 1]) return null;
 
-  const url = `${OSRM_URL}/${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+  const path = located.map((p) => `${p.lon},${p.lat}`).join(";");
+  const url = `${OSRM_URL}/${path}?overview=false`;
   const res = await withTimeout(fetch(url, { headers: { "User-Agent": USER_AGENT } }));
   if (!res.ok) throw new Error(`osrm route failed: ${res.status}`);
   const json = (await res.json()) as {
@@ -54,5 +60,6 @@ export async function getDrivingRoute(
   return {
     miles_one_way: route.distance / 1609.34,
     drive_hours_one_way: route.duration / 3600,
+    stop_count: located.length - 2,
   };
 }

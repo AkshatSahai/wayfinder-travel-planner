@@ -6,13 +6,7 @@ const GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json";
 const TIMEOUT_MS = 8000;
 
 export type ActivityCategory =
-  | "Food"
-  | "Nature"
-  | "Activity"
-  | "Relaxation"
-  | "Nightlife"
-  | "Spa"
-  | "Culture";
+  "Food" | "Nature" | "Activity" | "Relaxation" | "Nightlife" | "Spa" | "Culture";
 
 const CATEGORY_QUERIES: Record<ActivityCategory, string> = {
   Food: "top restaurants",
@@ -125,7 +119,7 @@ async function searchTextCategory(
 }
 
 function mapPlace(p: Place, category: ActivityCategory, apiKey: string) {
-  const priceCents = p.priceLevel ? PRICE_LEVEL_CENTS[p.priceLevel] ?? 2500 : 2500;
+  const priceCents = p.priceLevel ? (PRICE_LEVEL_CENTS[p.priceLevel] ?? 2500) : 2500;
   const desc =
     p.editorialSummary?.text ??
     `${p.primaryTypeDisplayName?.text ?? category} · ${p.formattedAddress ?? ""}`.trim();
@@ -148,6 +142,60 @@ function mapPlace(p: Place, category: ActivityCategory, apiKey: string) {
 }
 
 export type PlaceActivity = Awaited<ReturnType<typeof searchTextCategory>>[number];
+
+export interface TopSight {
+  name: string;
+  description: string;
+  rating: number | null;
+  review_count: number | null;
+  photo_url: string | null;
+  maps_url: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+// Top attractions for the Destination tab's ranked list + map cards.
+export async function searchTopSights(destination: string): Promise<TopSight[]> {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("GOOGLE_API_KEY missing");
+  const res = await withTimeout(
+    fetch(PLACES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask":
+          "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.editorialSummary,places.primaryTypeDisplayName,places.photos,places.googleMapsUri",
+      },
+      body: JSON.stringify({
+        textQuery: `top attractions and places to visit in ${destination}`,
+        maxResultCount: 10,
+      }),
+    }),
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`places top-sights failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  const json = (await res.json()) as { places?: Place[] };
+  return (json.places ?? []).map((p) => {
+    const photoName = p.photos?.[0]?.name;
+    return {
+      name: p.displayName?.text ?? "Unknown",
+      description:
+        p.editorialSummary?.text ??
+        `${p.primaryTypeDisplayName?.text ?? "Attraction"} · ${p.formattedAddress ?? ""}`.trim(),
+      rating: p.rating ?? null,
+      review_count: p.userRatingCount ?? null,
+      photo_url: photoName
+        ? `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=640&key=${apiKey}`
+        : null,
+      maps_url: p.googleMapsUri ?? null,
+      lat: p.location?.latitude ?? null,
+      lng: p.location?.longitude ?? null,
+    } satisfies TopSight;
+  });
+}
 
 export async function searchActivitiesReal(destination: string): Promise<PlaceActivity[]> {
   const apiKey = process.env.GOOGLE_API_KEY;

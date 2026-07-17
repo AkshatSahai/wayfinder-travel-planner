@@ -60,16 +60,17 @@ export const updateTrip = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => tripUpdateSchema.parse(d))
   .handler(async ({ data, context }) => {
     const { id, ...patch } = data;
-    const { error: updErr } = await context.supabase
-      .from("trips").update(patch).eq("id", id);
+    const { error: updErr } = await context.supabase.from("trips").update(patch).eq("id", id);
     if (updErr) throw new Error(updErr.message);
     const { data: row, error: selErr } = await context.supabase
-      .from("trips").select("*").eq("id", id).maybeSingle();
+      .from("trips")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
     if (selErr) throw new Error(selErr.message);
     if (!row) throw new Error("Trip not found");
     return { trip: row };
   });
-
 
 export const deleteTrip = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -86,7 +87,12 @@ export const getTrip = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const [{ data: trip, error: e1 }, { data: items, error: e2 }] = await Promise.all([
       context.supabase.from("trips").select("*").eq("id", data.id).single(),
-      context.supabase.from("trip_items").select("*").eq("trip_id", data.id).order("day_index").order("sort_order"),
+      context.supabase
+        .from("trip_items")
+        .select("*")
+        .eq("trip_id", data.id)
+        .order("day_index")
+        .order("sort_order"),
     ]);
     if (e1) throw new Error(e1.message);
     if (e2) throw new Error(e2.message);
@@ -117,20 +123,28 @@ export const removeTripItem = createServerFn({ method: "POST" })
 
 export const updateTripItem = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({
-    id: z.string().uuid(),
-    day_index: z.number().int().nullable().optional(),
-    start_time: z.string().nullable().optional(),
-    end_time: z.string().nullable().optional(),
-    title: z.string().max(300).optional(),
-    subtitle: z.string().max(500).nullable().optional(),
-    cost_cents: z.number().int().optional(),
-    sort_order: z.number().int().optional(),
-  }).parse(d))
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        day_index: z.number().int().nullable().optional(),
+        start_time: z.string().nullable().optional(),
+        end_time: z.string().nullable().optional(),
+        title: z.string().max(300).optional(),
+        subtitle: z.string().max(500).nullable().optional(),
+        cost_cents: z.number().int().optional(),
+        sort_order: z.number().int().optional(),
+      })
+      .parse(d),
+  )
   .handler(async ({ data, context }) => {
     const { id, ...patch } = data;
     const { data: row, error } = await context.supabase
-      .from("trip_items").update(patch).eq("id", id).select("*").single();
+      .from("trip_items")
+      .update(patch)
+      .eq("id", id)
+      .select("*")
+      .single();
     if (error) throw new Error(error.message);
     return { item: row };
   });

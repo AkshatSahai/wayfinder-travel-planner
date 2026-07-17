@@ -1,6 +1,6 @@
 // TravelPayouts Hotellook adapter. Server-only.
-// Public endpoints (no token required for cache.json), but we send the token
-// when available for higher rate limits.
+// The keyless public endpoints were retired (404); a partner token is now
+// required for all requests (TRAVELPAYOUTS_API_KEY).
 
 const LOOKUP_URL = "https://engine.hotellook.com/api/v2/lookup.json";
 const CACHE_URL = "https://engine.hotellook.com/api/v2/cache.json";
@@ -63,9 +63,10 @@ function inferType(stars: number): TPHotel["type"] {
   return "hotel";
 }
 
-async function lookupLocation(query: string, token: string | undefined) {
-  const url = `${LOOKUP_URL}?query=${encodeURIComponent(query)}&lang=en&lookFor=both&limit=1${token ? `&token=${token}` : ""}`;
+async function lookupLocation(query: string, token: string) {
+  const url = `${LOOKUP_URL}?query=${encodeURIComponent(query)}&lang=en&lookFor=both&limit=1&token=${token}`;
   const res = await withTimeout(fetch(url));
+  if (res.status === 404) throw new Error("travelpayouts endpoints unavailable (404)");
   if (!res.ok) throw new Error(`travelpayouts lookup failed: ${res.status}`);
   const json = (await res.json()) as LookupResponse;
   return json.results?.locations?.[0] ?? null;
@@ -78,6 +79,7 @@ export async function searchHotels(params: {
   adults: number;
 }): Promise<TPHotel[]> {
   const token = process.env.TRAVELPAYOUTS_API_KEY;
+  if (!token) throw new Error("TRAVELPAYOUTS_API_KEY missing");
   const loc = await lookupLocation(params.destination, token);
   if (!loc) return [];
 
@@ -85,10 +87,10 @@ export async function searchHotels(params: {
   const url =
     `${CACHE_URL}?location=${encodeURIComponent(loc.fullName)}` +
     `&checkIn=${params.checkIn}&checkOut=${params.checkOut}` +
-    `&adults=${params.adults}&currency=usd&limit=12` +
-    (token ? `&token=${token}` : "");
+    `&adults=${params.adults}&currency=usd&limit=12&token=${token}`;
 
   const res = await withTimeout(fetch(url));
+  if (res.status === 404) throw new Error("travelpayouts endpoints unavailable (404)");
   if (!res.ok) throw new Error(`travelpayouts cache failed: ${res.status}`);
   const raw = (await res.json()) as unknown;
   if (!Array.isArray(raw)) return [];

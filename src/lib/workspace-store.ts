@@ -17,11 +17,16 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
   aiCache: {},
   setTab: (tab: WorkspaceTab) => set({ tab }),
   setSelectedDestination: (selectedDestination: string | null) => set({ selectedDestination }),
-  setCache: (key: string, value: unknown) => set((s: WorkspaceState) => ({ aiCache: { ...s.aiCache, [key]: value } })),
+  setCache: (key: string, value: unknown) =>
+    set((s: WorkspaceState) => ({ aiCache: { ...s.aiCache, [key]: value } })),
 }));
 
 export function formatMoney(cents: number, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format((cents ?? 0) / 100);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format((cents ?? 0) / 100);
 }
 
 export function daysBetween(a?: string | null, b?: string | null): number {

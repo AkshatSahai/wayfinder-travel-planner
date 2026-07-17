@@ -10,6 +10,7 @@ import { createTrip } from "@/lib/trips.functions";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { CurationOverlay } from "@/components/shell/curation-overlay";
 
 const EXAMPLES = [
   "5-6 days in Michigan near a resort or beach house. Love food, hiking, spas, driving. Aug 12-17, budget $3500 for two.",
@@ -103,6 +104,7 @@ function Landing() {
 
   return (
     <div className="min-h-screen bg-background">
+      <CurationOverlay open={mutation.isPending} />
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
         <Link to="/" className="flex items-center gap-2 font-display text-xl font-semibold">
           <Compass className="h-6 w-6 text-primary" />
