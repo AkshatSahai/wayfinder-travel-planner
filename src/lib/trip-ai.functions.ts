@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText, NoObjectGeneratedError, Output } from "ai";
+import { APICallError, generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import { createGateway, CHAT_MODEL } from "./ai-gateway.server";
 
@@ -54,6 +54,8 @@ async function generateStructured<T>(
       const { output } = await generateText({
         model: gateway(CHAT_MODEL),
         output: Output.object({ schema: schema as never }),
+        // Quota errors would be retried too; keep the SDK's own retry burn low.
+        maxRetries: 1,
         system:
           system ??
           "You are an expert travel concierge. Return realistic, specific, well-researched results. Costs in USD cents. Always return JSON.",
@@ -61,6 +63,10 @@ async function generateStructured<T>(
       });
       return output as T;
     } catch (err) {
+      if (isQuotaError(err)) {
+        console.error("[travel-ai] provider rate limit hit:", errMsg(err).slice(0, 200));
+        throw new Error("The AI service hit its rate limit — wait a minute and try again.");
+      }
       if (NoObjectGeneratedError.isInstance(err)) {
         console.error(
           `[travel-ai] no object generated (attempt ${attempt + 1}/2). Raw text:`,
@@ -76,6 +82,15 @@ async function generateStructured<T>(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isQuotaError(err: unknown): boolean {
+  // NoObjectGeneratedError wraps the underlying call error in `cause`.
+  const cause = NoObjectGeneratedError.isInstance(err) ? err.cause : err;
+  if (APICallError.isInstance(cause)) {
+    return cause.statusCode === 429 || /quota|rate.?limit/i.test(cause.message);
+  }
+  return /quota|rate.?limit|429/i.test(errMsg(cause ?? err));
 }
 
 // Detects our providers' "<ENV_VAR> missing" errors so panels can render setup instructions.

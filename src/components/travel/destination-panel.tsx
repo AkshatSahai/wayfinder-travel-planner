@@ -99,6 +99,7 @@ function DestinationPicker({
     ],
     queryFn: () => fn({ data: { parsed: normalized } }),
     staleTime: Infinity,
+    retry: false,
   });
 
   const empty = !isLoading && !isError && (data?.destinations.length ?? 0) === 0;
@@ -245,6 +246,7 @@ function DestinationOverview({
       }),
     enabled: origin.length > 0 && current.length > 0,
     staleTime: Infinity,
+    retry: false,
   });
 
   const lodgingQ = useQuery({
@@ -262,6 +264,7 @@ function DestinationOverview({
       }),
     enabled: current.length > 0,
     staleTime: Infinity,
+    retry: false,
   });
 
   const cheapest = (mode: "car" | "flight") => {

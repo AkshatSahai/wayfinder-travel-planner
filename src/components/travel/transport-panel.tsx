@@ -67,6 +67,7 @@ export function TransportPanel({
       }),
     enabled: origin.length > 0 && destination.length > 0,
     staleTime: Infinity,
+    retry: false,
   });
 
   if (!destination)

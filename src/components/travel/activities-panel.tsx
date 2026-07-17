@@ -62,6 +62,7 @@ export function ActivitiesPanel({
       }),
     enabled: destination.length > 0,
     staleTime: Infinity,
+    retry: false,
   });
 
   if (!destination)
