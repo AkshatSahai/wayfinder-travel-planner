@@ -23,11 +23,10 @@ export const Route = createFileRoute("/auth")({
   component: AuthPage,
 });
 
-// Where to land after auth. "/" only matters when a trip prompt is waiting to
-// be replayed on the landing page; otherwise the trips list is the useful home.
+// Where to land after auth: the homepage, so the user can prompt a trip right
+// away. A non-"/" redirect (e.g. bounced off /trips while signed out) is honored.
 function postAuthTarget(redirect: string | undefined): string {
-  if (!redirect || (redirect === "/" && !sessionStorage.getItem("pendingPrompt"))) return "/trips";
-  return redirect;
+  return redirect ?? "/";
 }
 
 function AuthPage() {
@@ -73,14 +72,19 @@ function AuthPage() {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: window.location.origin + "/trips" },
+          options: { emailRedirectTo: window.location.origin + "/" },
         });
         if (error) throw error;
-        toast.success("Account created. Check your email to confirm, then sign in.");
-        setMode("signin");
+        if (data.session) {
+          // Auto-confirm is on: the new user is already signed in.
+          navigate({ to: postAuthTarget(redirect) });
+        } else {
+          toast.success("Account created. Check your email to confirm, then sign in.");
+          setMode("signin");
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
