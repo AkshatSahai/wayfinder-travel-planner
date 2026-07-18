@@ -1,5 +1,25 @@
 # Wayfinder Changelog
 
+## v0.2.1 — 2026-07-17
+
+### Overview
+
+Infrastructure patch: Wayfinder's AI now runs on a properly billed, server-side Gemini API key instead of the free tier, eliminating the "AI service hit its rate limit" errors that interrupted trip curation during normal use.
+
+### Updates
+
+#### Bug Fixes
+
+**AI rate-limit errors during normal use**
+
+- _Technical:_ The original Gemini key was HTTP-referrer-restricted — a browser-key restriction type that Google never allows to carry Gemini billing — so all AI calls silently ran on the free tier's small daily quota (~20 requests/day on `gemini-3-flash-preview`). Replaced with a new server-side key (application restriction "None", API-restricted to Gemini only, service-account-bound, billing linked). The temporary `AI_MODEL=gemini-flash-latest` override, added only to stretch free-tier quota, was removed — the app is back on the default newest model.
+- _For everyone:_ Planning a trip could stall with a "wait a minute and try again" message after surprisingly little use, because the AI was running on a tiny free allowance. The app now uses a paid AI account, so those interruptions should stop. (One follow-up: the billing account is prepaid and needs credits added before the AI responds again.)
+
+#### Upcoming
+
+- Replacement live hotel data source (TravelPayouts is discontinued).
+- Smart paste for Airbnb/VRBO/Amtrak links; Itinerary and Activities redesigns.
+
 ## v0.2.0 — 2026-07-17
 
 ### Overview
