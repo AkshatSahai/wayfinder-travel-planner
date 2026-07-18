@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import {
   APIProvider,
   Map as GoogleMap,
@@ -30,25 +30,75 @@ interface Props {
 
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string | undefined;
 
+function MapFallback({ title, hint }: { title: string; hint: ReactNode }) {
+  return (
+    <div className="flex h-full min-h-[320px] items-center justify-center rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-center">
+      <div className="max-w-xs text-sm text-muted-foreground">
+        <MapPin className="mx-auto mb-2 h-5 w-5" />
+        <p className="font-medium text-foreground">{title}</p>
+        <p className="mt-1 text-xs">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+// A broken map (bad key, blocked referrer, Google runtime errors) must never
+// take down the workspace — contain it and show a fallback card instead.
+class MapErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err: unknown) {
+    console.error("[map] contained error:", err);
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <MapFallback
+          title="Map failed to load"
+          hint="Usually a key restriction — make sure this site's domain (including localhost for dev) is in the Maps key's allowed referrers."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function DestinationMap(props: Props) {
+  const [authFailed, setAuthFailed] = useState(false);
+  useEffect(() => {
+    // Google Maps reports invalid keys / blocked referrers via this global.
+    (window as unknown as Record<string, unknown>).gm_authFailure = () => setAuthFailed(true);
+  }, []);
+
   if (!MAPS_KEY) {
     return (
-      <div className="flex h-full min-h-[320px] items-center justify-center rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-center">
-        <div className="max-w-xs text-sm text-muted-foreground">
-          <MapPin className="mx-auto mb-2 h-5 w-5" />
-          <p className="font-medium text-foreground">Map isn't connected yet</p>
-          <p className="mt-1 text-xs">
+      <MapFallback
+        title="Map isn't connected yet"
+        hint={
+          <>
             Set <code className="rounded bg-muted px-1">VITE_GOOGLE_MAPS_KEY</code> (a browser key
             with Maps JavaScript, Places, and Directions APIs enabled) and redeploy.
-          </p>
-        </div>
-      </div>
+          </>
+        }
+      />
+    );
+  }
+  if (authFailed) {
+    return (
+      <MapFallback
+        title="Map key was rejected"
+        hint="Google blocked this site for the configured Maps key. Add this domain (and localhost for dev) to the key's allowed referrers in Google Cloud Console."
+      />
     );
   }
   return (
-    <APIProvider apiKey={MAPS_KEY}>
-      <InnerMap {...props} />
-    </APIProvider>
+    <MapErrorBoundary>
+      <APIProvider apiKey={MAPS_KEY}>
+        <InnerMap {...props} />
+      </APIProvider>
+    </MapErrorBoundary>
   );
 }
 

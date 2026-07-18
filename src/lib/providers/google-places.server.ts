@@ -197,6 +197,31 @@ export async function searchTopSights(destination: string): Promise<TopSight[]> 
   });
 }
 
+// Grounding check: does this place actually have the claimed feature?
+// A cheap Places text search — verified when at least one result comes back.
+export async function verifyFeature(
+  place: string,
+  claim: string,
+): Promise<{ verified: boolean; example: string | null }> {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("GOOGLE_API_KEY missing");
+  const res = await withTimeout(
+    fetch(PLACES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "places.id,places.displayName",
+      },
+      body: JSON.stringify({ textQuery: `${claim} in ${place}`, maxResultCount: 2 }),
+    }),
+  );
+  if (!res.ok) throw new Error(`places verify failed: ${res.status}`);
+  const json = (await res.json()) as { places?: Place[] };
+  const first = json.places?.[0];
+  return { verified: Boolean(first), example: first?.displayName?.text ?? null };
+}
+
 export async function searchActivitiesReal(destination: string): Promise<PlaceActivity[]> {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new Error("GOOGLE_API_KEY missing");

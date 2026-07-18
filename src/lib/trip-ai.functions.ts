@@ -6,6 +6,7 @@ import { createGateway, CHAT_MODEL } from "./ai-gateway.server";
 // -------- Schemas --------
 const parsedTripSchema = z.object({
   destination: z.string().nullable(),
+  destination_is_specific: z.boolean(),
   region_hint: z.string().nullable(),
   origin: z.string().nullable(),
   start_date: z.string().nullable(),
@@ -19,25 +20,83 @@ const parsedTripSchema = z.object({
   missing_fields: z.array(z.string()),
 });
 
+const candidateSchema = z.object({
+  name: z.string(),
+  region: z.string(),
+  match_score: z.number(),
+  rationale: z.string(),
+  best_for: z.array(z.string()),
+  hero_tagline: z.string(),
+  lat: z.number(),
+  lng: z.number(),
+  // Concrete, checkable claims tied to the traveler's criteria — each is
+  // cross-checked against Google Places before candidates are shown.
+  feature_claims: z.array(z.string()).max(3),
+});
+
 const destinationsSchema = z.object({
-  destinations: z.array(
-    z.object({
-      name: z.string(),
-      region: z.string(),
-      match_score: z.number(),
-      rationale: z.string(),
-      best_for: z.array(z.string()),
-      hero_tagline: z.string(),
-      lat: z.number(),
-      lng: z.number(),
-    }),
-  ),
+  why_top: z.string(),
+  destinations: z.array(candidateSchema),
 });
 
 const chatDestinationsSchema = z.object({
   reply: z.string(),
-  destinations: destinationsSchema.shape.destinations,
+  why_top: z.string(),
+  destinations: z.array(candidateSchema),
 });
+
+export interface VerifiedFeature {
+  feature: string;
+  verified: boolean;
+  example: string | null;
+}
+
+type Candidate = z.infer<typeof candidateSchema>;
+export type VerifiedCandidate = Candidate & { verified_features: VerifiedFeature[] };
+
+// Ground the AI's claims: check each candidate's feature_claims against Google
+// Places. Verified candidates sort first; candidates with zero verified claims
+// are dropped unless that would leave fewer than 3 options. If Places is
+// unavailable, candidates pass through unannotated.
+async function verifyCandidates(candidates: Candidate[]): Promise<VerifiedCandidate[]> {
+  let verifyFeature: (
+    place: string,
+    claim: string,
+  ) => Promise<{ verified: boolean; example: string | null }>;
+  try {
+    ({ verifyFeature } = await import("./providers/google-places.server"));
+    if (!process.env.GOOGLE_API_KEY) throw new Error("GOOGLE_API_KEY missing");
+  } catch {
+    return candidates.map((c) => ({ ...c, verified_features: [] }));
+  }
+
+  const annotated = await Promise.all(
+    candidates.map(async (c) => {
+      const checks = await Promise.allSettled(
+        c.feature_claims.slice(0, 3).map((claim) => verifyFeature(`${c.name}, ${c.region}`, claim)),
+      );
+      const verified_features: VerifiedFeature[] = c.feature_claims.slice(0, 3).map((claim, i) => {
+        const r = checks[i];
+        return r.status === "fulfilled"
+          ? { feature: claim, verified: r.value.verified, example: r.value.example }
+          : { feature: claim, verified: false, example: null };
+      });
+      return { ...c, verified_features };
+    }),
+  );
+
+  const score = (c: VerifiedCandidate) =>
+    c.verified_features.length === 0
+      ? 0.5
+      : c.verified_features.filter((f) => f.verified).length / c.verified_features.length;
+  const sorted = annotated
+    .slice()
+    .sort((a, b) => score(b) - score(a) || b.match_score - a.match_score);
+  const surviving = sorted.filter(
+    (c) => c.verified_features.length === 0 || c.verified_features.some((f) => f.verified),
+  );
+  return surviving.length >= 3 ? surviving : sorted;
+}
 
 const recommendationsSchema = z.object({
   tips: z.array(
@@ -114,7 +173,7 @@ export const parseTripPrompt = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const today = new Date().toISOString().slice(0, 10);
     const result = await generateStructured(
-      `Today is ${today}. Extract structured trip parameters from this request. If the user gives relative dates ("next weekend", "in June"), resolve to concrete YYYY-MM-DD. "origin" is where the traveler is leaving FROM (home city), if stated. "destination" is where they want to go — if they name a broad region (e.g. "Michigan beaches"), put it in destination and also set region_hint. Budget like "$3500" means budget_cents 350000. If a field is not stated, set it to null and add its name to missing_fields. Required for planning: destination, origin, start_date, end_date, budget_cents. Interests should be short tags (e.g. "hiking", "spa", "food", "beach").\n\nRequest:\n"""${data.prompt}"""`,
+      `Today is ${today}. Extract structured trip parameters from this request. If the user gives relative dates ("next weekend", "in June"), resolve to concrete YYYY-MM-DD. "origin" is where the traveler is leaving FROM (home city), if stated. "destination" is where they want to go — if they name a broad region (e.g. "Michigan beaches"), put it in destination and also set region_hint. "destination_is_specific" is true ONLY when they name a concrete town/city/resort (e.g. "Charleston", "Traverse City"), false for regions, states, or vague areas. Budget like "$3500" means budget_cents 350000. If a field is not stated, set it to null and add its name to missing_fields. Required for planning: destination, origin, start_date, end_date, budget_cents. Interests should be short tags (e.g. "hiking", "spa", "food", "beach").\n\nRequest:\n"""${data.prompt}"""`,
       parsedTripSchema,
     );
     if (!result) {
@@ -123,6 +182,7 @@ export const parseTripPrompt = createServerFn({ method: "POST" })
       );
       return {
         destination: null,
+        destination_is_specific: false,
         region_hint: null,
         origin: null,
         start_date: null,
@@ -146,10 +206,17 @@ export const suggestDestinations = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const p = data.parsed;
     const result = await generateStructured(
-      `Suggest 5 specific destinations for this trip. Prefer real towns, resorts, or specific areas (not whole states). Rank by fit; match_score is 0-100. lat/lng are the destination's approximate coordinates.\n\nContext:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Party size: ${p.party_size ?? "unspecified"}\n- Travel mode: ${p.travel_mode ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n- Notes: ${p.notes ?? ""}\n\nEach hero_tagline is one short evocative line.`,
+      `Research and rank 5 real candidate towns/cities for this trip. Prefer real towns, resorts, or specific areas (not whole states). Rank by fit against the traveler's ACTUAL criteria (interests, budget, drive distance from origin) — not nearest-neighbor geography. match_score is 0-100. lat/lng are approximate coordinates. For each candidate, "feature_claims" lists up to 3 concrete, checkable claims tied to the criteria (e.g. "sandy swimming beach", "hiking trails", "notable restaurants"). "why_top" explains in 1-2 sentences why the #1 candidate fits, explicitly referencing the traveler's stated criteria.\n\nContext:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Leaving from: ${p.origin ?? "unspecified"}\n- Party size: ${p.party_size ?? "unspecified"}\n- Travel mode: ${p.travel_mode ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Budget: ${p.budget_cents ? "$" + p.budget_cents / 100 : "unspecified"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n- Notes: ${p.notes ?? ""}\n\nEach hero_tagline is one short evocative line.`,
       destinationsSchema,
     );
-    return result ?? { destinations: [] };
+    if (!result) return { why_top: "", destinations: [] as VerifiedCandidate[] };
+    const verified = await verifyCandidates(result.destinations);
+    // If verification demoted the AI's #1, its why_top no longer applies.
+    const topChanged = verified[0]?.name !== result.destinations[0]?.name;
+    return {
+      why_top: topChanged ? (verified[0]?.rationale ?? "") : result.why_top,
+      destinations: verified,
+    };
   });
 
 // -------- Destination refinement chat (AI) --------
@@ -171,12 +238,22 @@ export const chatDestinations = createServerFn({ method: "POST" })
       .map((m) => `${m.role === "user" ? "Traveler" : "You"}: ${m.content}`)
       .join("\n");
     const result = await generateStructured(
-      `You are refining destination suggestions through conversation. Respond to the traveler's latest message with a short conversational "reply" (2-3 sentences max), and update "destinations" (always exactly 5, ranked, real specific places with approximate lat/lng) to reflect ALL their preferences so far.\n\nTrip context:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Leaving from: ${p.origin ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Party: ${p.party_size ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n\nCurrently suggested: ${data.current_destinations.join(", ") || "(none yet)"}\n\nConversation so far:\n${transcript}`,
+      `You are refining destination suggestions through conversation. Respond to the traveler's latest message with a short conversational "reply" (2-3 sentences max), and update "destinations" (always exactly 5, ranked, real specific places with approximate lat/lng) to reflect ALL their preferences so far. For each candidate, "feature_claims" lists up to 3 concrete, checkable claims tied to their criteria. "why_top" explains in 1-2 sentences why the #1 candidate fits their stated preferences.\n\nTrip context:\n- Region/hint: ${p.destination ?? p.region_hint ?? "flexible"}\n- Leaving from: ${p.origin ?? "unspecified"}\n- Dates: ${p.start_date ?? "?"} to ${p.end_date ?? "?"}\n- Party: ${p.party_size ?? "?"}\n- Interests: ${p.interests.join(", ") || "none stated"}\n\nCurrently suggested: ${data.current_destinations.join(", ") || "(none yet)"}\n\nConversation so far:\n${transcript}`,
       chatDestinationsSchema,
     );
-    return (
-      result ?? { reply: "Sorry — I couldn't process that. Try rephrasing?", destinations: [] }
-    );
+    if (!result)
+      return {
+        reply: "Sorry — I couldn't process that. Try rephrasing?",
+        why_top: "",
+        destinations: [] as VerifiedCandidate[],
+      };
+    const verified = await verifyCandidates(result.destinations);
+    const topChanged = verified[0]?.name !== result.destinations[0]?.name;
+    return {
+      reply: result.reply,
+      why_top: topChanged ? (verified[0]?.rationale ?? "") : result.why_top,
+      destinations: verified,
+    };
   });
 
 // -------- Top places for the Destination map (Google Places) --------

@@ -20,6 +20,7 @@ import {
 
 type Parsed = {
   destination: string | null;
+  destination_is_specific?: boolean;
   region_hint: string | null;
   origin?: string | null;
   start_date: string | null;
@@ -42,6 +43,8 @@ type Candidate = {
   hero_tagline: string;
   lat: number;
   lng: number;
+  feature_claims: string[];
+  verified_features: { feature: string; verified: boolean; example: string | null }[];
 };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -58,6 +61,7 @@ interface Props {
 function normalizeParsed(parsed: Parsed) {
   return {
     destination: parsed.destination ?? null,
+    destination_is_specific: parsed.destination_is_specific ?? false,
     region_hint: parsed.region_hint ?? null,
     origin: parsed.origin ?? null,
     start_date: parsed.start_date ?? null,
@@ -104,7 +108,10 @@ export function DestinationPanel({
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [chatResults, setChatResults] = useState<Candidate[] | null>(null);
+  const [chatResults, setChatResults] = useState<{
+    why_top: string;
+    destinations: Candidate[];
+  } | null>(null);
 
   const chatMut = useMutation({
     mutationFn: (allMessages: ChatMessage[]) =>
@@ -112,14 +119,17 @@ export function DestinationPanel({
         data: {
           messages: allMessages,
           parsed: normalized,
-          current_destinations: (chatResults ?? candidatesQ.data?.destinations ?? []).map(
-            (d) => d.name,
-          ),
+          current_destinations: (
+            chatResults?.destinations ??
+            candidatesQ.data?.destinations ??
+            []
+          ).map((d) => d.name),
         },
       }),
     onSuccess: (res) => {
       setMessages((m) => [...m, { role: "assistant", content: res.reply }]);
-      if (res.destinations.length > 0) setChatResults(res.destinations);
+      if (res.destinations.length > 0)
+        setChatResults({ why_top: res.why_top, destinations: res.destinations });
     },
     onError: (err: Error) => {
       setMessages((m) => [...m, { role: "assistant", content: err.message }]);
@@ -143,7 +153,9 @@ export function DestinationPanel({
     retry: false,
   });
 
-  const candidates = chatResults ?? candidatesQ.data?.destinations ?? [];
+  const candidates = chatResults?.destinations ?? candidatesQ.data?.destinations ?? [];
+  const whyTop = chatResults?.why_top ?? candidatesQ.data?.why_top ?? "";
+  const [topPick, ...alternatives] = candidates;
 
   const pins: MapCardPin[] = picking
     ? candidates.map((c) => ({
@@ -278,8 +290,45 @@ export function DestinationPanel({
               </div>
             )}
 
-            <div className="grid gap-3">
-              {candidates.map((d) => {
+            {topPick && (
+              <button
+                data-testid="top-pick"
+                onClick={() => {
+                  onPick(topPick.name);
+                  setShowPicker(false);
+                }}
+                className="w-full rounded-2xl border-2 border-primary bg-primary/5 p-5 text-left shadow-card transition-all hover:shadow-glow"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="rounded-full bg-primary px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-primary-foreground">
+                      Top pick
+                    </span>
+                    <h3 className="mt-2 font-display text-2xl font-semibold">{topPick.name}</h3>
+                    <p className="text-xs text-muted-foreground">{topPick.region}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                      {topPick.match_score}
+                    </span>
+                    {current === topPick.name && <Check className="h-4 w-4 text-primary" />}
+                  </div>
+                </div>
+                <p className="mt-2 text-sm italic text-muted-foreground">
+                  "{topPick.hero_tagline}"
+                </p>
+                <p className="mt-2 text-sm font-medium">{whyTop || topPick.rationale}</p>
+                <VerifiedChips candidate={topPick} />
+              </button>
+            )}
+
+            {alternatives.length > 0 && (
+              <p className="pt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Also worth considering
+              </p>
+            )}
+            <div className="grid gap-3 lg:grid-cols-2" data-testid="candidate-grid">
+              {alternatives.map((d) => {
                 const isCurrent = current === d.name;
                 return (
                   <button
@@ -302,15 +351,8 @@ export function DestinationPanel({
                         {isCurrent && <Check className="h-4 w-4 text-primary" />}
                       </div>
                     </div>
-                    <p className="mt-2 text-sm italic text-muted-foreground">"{d.hero_tagline}"</p>
-                    <p className="mt-2 text-sm">{d.rationale}</p>
-                    <div className="mt-3 flex flex-wrap gap-1">
-                      {d.best_for.map((b) => (
-                        <span key={b} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-                          {b}
-                        </span>
-                      ))}
-                    </div>
+                    <p className="mt-2 line-clamp-2 text-sm">{d.rationale}</p>
+                    <VerifiedChips candidate={d} />
                   </button>
                 );
               })}
@@ -460,6 +502,47 @@ export function DestinationPanel({
           onAddStop={picking ? undefined : addStop}
         />
       </div>
+    </div>
+  );
+}
+
+// Grounding badges: which of the AI's claims Google Places actually confirmed.
+function VerifiedChips({ candidate }: { candidate: Candidate }) {
+  const features = candidate.verified_features ?? [];
+  if (features.length === 0) {
+    return (
+      <div className="mt-3 flex flex-wrap gap-1">
+        {(candidate.best_for ?? []).map((b) => (
+          <span key={b} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+            {b}
+          </span>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3">
+      <div className="flex flex-wrap gap-1.5">
+        {features.map((f) => (
+          <span
+            key={f.feature}
+            title={
+              f.verified ? `Confirmed: ${f.example ?? f.feature}` : "Not confirmed by Google Places"
+            }
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+              f.verified
+                ? "bg-success/10 font-medium text-success"
+                : "bg-muted text-muted-foreground line-through decoration-muted-foreground/40"
+            }`}
+          >
+            {f.verified ? <Check className="h-3 w-3" /> : null}
+            {f.feature}
+          </span>
+        ))}
+      </div>
+      {features.some((f) => f.verified) && (
+        <p className="mt-1 text-[10px] text-muted-foreground">✓ verified via Google Places</p>
+      )}
     </div>
   );
 }

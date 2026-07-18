@@ -18,27 +18,23 @@ export function MissingFieldsBanner({
 }) {
   const parsed = (trip.parsed_params ?? {}) as ParsedParams;
 
-  const [destination, setDestination] = useState(trip.destination ?? "");
   const [origin, setOrigin] = useState(parsed.origin ?? "");
   const [start, setStart] = useState(trip.start_date ?? "");
   const [end, setEnd] = useState(trip.end_date ?? "");
   const [budget, setBudget] = useState(trip.budget_cents ? String(trip.budget_cents / 100) : "");
   const [party, setParty] = useState(trip.party_size ? String(trip.party_size) : "2");
 
-  const needsDestination = !trip.destination;
+  // Destination is intentionally NOT handled here — the Destination tab's
+  // curated picker (with manual entry) is the canonical way to choose one.
   const needsOrigin = !parsed.origin;
   const needsDates = !trip.start_date || !trip.end_date;
   const needsBudget = !trip.budget_cents;
   const parseFailed = parsed.parse_failed === true;
 
-  if (!needsDestination && !needsOrigin && !needsDates && !needsBudget) return null;
+  if (!needsOrigin && !needsDates && !needsBudget) return null;
 
   const save = () => {
     const patch: Partial<Trip> = {};
-    if (needsDestination && destination.trim()) {
-      patch.destination = destination.trim();
-      patch.title = destination.trim();
-    }
     if (needsDates && start && end) {
       patch.start_date = start;
       patch.end_date = end;
@@ -68,17 +64,6 @@ export function MissingFieldsBanner({
               : "These unlock live flights, hotels, and events for your dates."}
           </p>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {needsDestination && (
-              <div>
-                <Label htmlFor="dest">Destination</Label>
-                <Input
-                  id="dest"
-                  placeholder="e.g. Traverse City, MI"
-                  value={destination}
-                  onChange={(e) => setDestination(e.target.value)}
-                />
-              </div>
-            )}
             {needsOrigin && (
               <div>
                 <Label htmlFor="orig">Leaving from</Label>

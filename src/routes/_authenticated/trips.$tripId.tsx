@@ -110,7 +110,8 @@ function WorkspacePage() {
 
   const totalCents = items.reduce((s, i) => s + (i.cost_cents ?? 0), 0);
   const numDays = daysBetween(trip.start_date, trip.end_date);
-  const destination = trip.destination ?? parsed.destination ?? "";
+  // Only a confirmed destination counts — a parsed region stays in curation mode.
+  const destination = trip.destination ?? "";
   const origin = parsed.origin ?? "";
   const interests = parsed.interests ?? [];
   const waypoints = parsed.waypoints ?? [];

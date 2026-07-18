@@ -62,7 +62,9 @@ function Landing() {
           raw_prompt: raw,
           parsed_params: parsed,
           title: parsed.destination ?? "New trip",
-          destination: parsed.destination,
+          // A broad region ("Michigan") isn't a destination — leave it unset so
+          // the workspace opens in curation mode with ranked candidates.
+          destination: parsed.destination_is_specific ? parsed.destination : null,
           start_date: parsed.start_date,
           end_date: parsed.end_date,
           party_size: parsed.party_size ?? 2,

@@ -1,5 +1,37 @@
 # Wayfinder Changelog
 
+## v0.2.0 — 2026-07-17
+
+### Overview
+
+Smarter destination selection. Creating a trip now lands you on a researched, ranked set of real candidate towns — each one cross-checked against Google Places to confirm it actually offers what the AI claims — with a clearly called-out top recommendation explaining why it fits your stated criteria. The chat panel refines this same candidate set, and choosing any candidate (not just the top pick) flows into the map, waypoints, and downstream tabs unchanged.
+
+### Updates
+
+#### New Features
+
+**Grounded destination curation with a top pick**
+
+- _Technical:_ The candidate schema gained `feature_claims` (≤3 concrete, checkable claims per candidate tied to the traveler's interests) and `why_top`. A new `verifyCandidates` pipeline fans out Places text searches (`"${claim} in ${place}"`, minimal field mask) per claim, annotates each candidate with `verified_features`, sorts verified candidates first, and drops candidates with zero confirmed claims (unless that leaves fewer than 3). Both `suggestDestinations` and `chatDestinations` route through the same pipeline, so the initial curation and every chat re-rank return the identical `{ why_top, destinations }` grounded shape.
+- _For everyone:_ Suggestions are no longer just AI opinion. Before you see a town, Wayfinder checks with Google that the beach, trails, or restaurants the AI promised actually exist there — confirmed features get a green check, unconfirmed ones are shown crossed out rather than hidden.
+
+**Top-recommendation-first presentation**
+
+- _Technical:_ The picker renders candidate #1 as a hero card ("Top pick" badge, `why_top` copy referencing the parsed criteria, verified-feature chips) with all remaining candidates permanently visible in a comparison grid below — no click-to-reveal. Selection semantics are untouched: any card fires the existing `onPick` → `updateTrip` flow into the map/waypoints/downstream tabs.
+- _For everyone:_ Instead of five equal-looking cards, you get one clear "here's our best match and why" plus the runners-up side by side, so you can compare and pick any of them with one click.
+
+#### Bug Fixes
+
+**Region prompts skipped the candidate picker entirely**
+
+- _Technical:_ The parser stored broad regions ("Michigan") in `trip.destination`, putting the workspace into confirmed-destination mode and bypassing curation. The parse schema gained `destination_is_specific`; the landing flow now sets `trip.destination` only for concrete towns/cities, so region prompts open in curation mode (region as hint) while specific-city prompts keep the fast path. The redundant Destination input was removed from the missing-details banner — the curated picker (with manual entry) is the canonical selection path.
+- _For everyone:_ Typing "Michigan beaches" used to lock "Michigan" in as if it were a destination and skip the suggestions step. Now the app understands the difference between a region and a town: regions get you a curated shortlist to choose from, and naming an exact city still takes you straight there.
+
+#### Upcoming
+
+- Replacement live hotel data source (TravelPayouts is discontinued).
+- Smart paste for Airbnb/VRBO/Amtrak links; Itinerary and Activities redesigns.
+
 ## v0.1.1 — 2026-07-17
 
 ### Overview
