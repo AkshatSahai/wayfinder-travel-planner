@@ -1,5 +1,59 @@
 # Wayfinder Changelog
 
+## v0.3.0 — 2026-08-05
+
+### Overview
+
+Two ways in, and a workspace built around decisions rather than lists. Trips can now be created without any AI involvement — enter origin, destination, and dates and go straight to planning. Lodging becomes a real comparison tool: added stays sit side by side in a sortable table and on a map, and only an explicit "Book this stay" commits one to your itinerary and budget. The Destination tab is replaced by a Trip Details dashboard with a countdown, travel-time estimates, booking status, and a derived task list; AI destination curation moves into a dialog opened from it.
+
+### Updates
+
+#### New Features
+
+**Manual trip entry**
+
+- _Technical:_ The landing page gained an entry-mode toggle. Manual mode collects origin/destination through a new `PlaceAutocomplete` component (Places Autocomplete over the shadcn `Input`, with fallbacks to a plain text field when `VITE_GOOGLE_MAPS_KEY` is missing, rejected, or the library throws) plus native date inputs. On submit, a new `resolvePlaces` server fn geocodes both strings and the trip is created with `destination` already set and `entry_mode: "manual"` in `parsed_params` — which is what makes `DestinationPanel`'s `picking` gate skip curation, so no Gemini call happens anywhere in the path.
+- _For everyone:_ If you already know where you're going, you no longer have to describe your trip to an AI first. Pick "Plan it myself", enter where you're leaving from, where you're headed, and your dates, and you land straight in the planner.
+
+**Lodging is a comparison tool, not an auto-itinerary**
+
+- _Technical:_ Stays are stored as `trip_items` rows with `category: "candidate"`; booking flips one to `"booked"` and demotes any previously booked stay in the same mutation. A shared `committedItems()` helper filters candidates out of the itinerary and every budget total, so comparison entries stay visible without ever counting as spend. The panel adds a sortable comparison table (name, city, distance from origin via haversine, total, nights, source), a map of every stay, and a detail dialog carrying the "Book this stay" action. Live hotel results feed the same list instead of a separate section.
+- _For everyone:_ Adding a place you're considering no longer silently drops it into your itinerary and budget. Everything you add lines up in one table and on one map so you can compare distance and price, and only "Book this stay" makes it official.
+
+**Trip Details dashboard**
+
+- _Technical:_ New first tab replacing Destination. A new `estimateTravelTime` server fn returns per-mode estimates — OSRM for car, cheapest live Duffel offer for flight, and a labelled road-distance heuristic for train (50 mph plus an hour of station overhead) since no rail API is wired up. Booking status, the pending-task checklist, and the countdown are all derived from live trip and itinerary state; nothing is hand-maintained.
+- _For everyone:_ The first thing you see is where your trip actually stands: days until departure, how long it takes to get there by car, flight, or train, what's booked, and what still needs doing.
+
+**Drag and drop itinerary**
+
+- _Technical:_ dnd-kit with a dedicated drag handle, empty-day droppables, and keyboard sensor support. A drop writes the moved item plus every sibling whose order shifted through `updateTripItem`.
+- _For everyone:_ Drag anything in your itinerary to reorder it within a day or move it to a different day.
+
+#### Bug Fixes
+
+**Activities were pre-populated on manual trips**
+
+- _Technical:_ The Activities query now runs only when `autoBrowse` is set, which manually-created trips leave off. (The pre-filled cards were live Google Places and Ticketmaster browse results rather than AI curation, and were never written to the trip — but they made an intentionally empty trip look pre-planned.)
+- _For everyone:_ Trips you create yourself start genuinely empty. Suggestions appear only when you press "Browse activities".
+
+#### Changes
+
+**Budget moved out of the right rail**
+
+- _Technical:_ The sidebar budget card and the AI tips card are both gone; the tall rail is removed entirely. Budget is now a live chip in the meta bar on every tab, with the category breakdown and edit field in its popover. The now-unused `getRecommendations` server fn was deleted.
+- _For everyone:_ Your running total is always visible at the top of every tab instead of taking up a whole column. AI trip tips have been retired.
+
+**AI destination curation moved to a dialog**
+
+- _Technical:_ The candidate grid and refinement chat moved wholesale into `DestinationPickerDialog`, opened from Trip Details. Its query is gated on the dialog being open, so no AI call fires until you ask for one. `?tab=destination` links fall through to the dashboard rather than 404ing.
+- _For everyone:_ "Change destination" opens the ranked suggestions and chat in a popup, so re-curating stays available without costing a whole tab.
+
+#### Upcoming
+
+- Replacement live hotel data source (TravelPayouts is discontinued).
+- Smart paste for Airbnb/VRBO/Amtrak links.
+
 ## v0.2.1 — 2026-07-17
 
 ### Overview

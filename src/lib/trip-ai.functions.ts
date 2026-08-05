@@ -98,16 +98,6 @@ async function verifyCandidates(candidates: Candidate[]): Promise<VerifiedCandid
   return surviving.length >= 3 ? surviving : sorted;
 }
 
-const recommendationsSchema = z.object({
-  tips: z.array(
-    z.object({
-      kind: z.enum(["pacing", "weather", "transport", "budget", "logistics"]),
-      message: z.string(),
-      severity: z.enum(["info", "warn"]),
-    }),
-  ),
-});
-
 // -------- Helpers --------
 async function generateStructured<T>(
   prompt: string,
@@ -502,26 +492,4 @@ export const searchActivities = createServerFn({ method: "POST" })
     }
 
     return { places, places_error, places_missing_key, events, events_error, events_missing_key };
-  });
-
-// -------- Recommendations sidebar (AI) --------
-export const getRecommendations = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) =>
-    z
-      .object({
-        destination: z.string(),
-        start_date: z.string().nullable(),
-        end_date: z.string().nullable(),
-        itemsSummary: z.string(),
-        budget_cents: z.number().int().nullable(),
-        total_cents: z.number().int(),
-      })
-      .parse(d),
-  )
-  .handler(async ({ data }) => {
-    const result = await generateStructured(
-      `Review this trip plan and give 3-5 actionable tips. Cover pacing (too packed/empty days), weather warnings for the dates, transport advice, and budget flags.\n\nDestination: ${data.destination}\nDates: ${data.start_date} to ${data.end_date}\nBudget: ${data.budget_cents ? "$" + data.budget_cents / 100 : "none"}\nRunning total: $${(data.total_cents / 100).toFixed(0)}\n\nCurrent plan:\n${data.itemsSummary}`,
-      recommendationsSchema,
-    );
-    return result ?? { tips: [] };
   });

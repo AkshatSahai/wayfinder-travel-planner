@@ -1,13 +1,22 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Compass, MapPin, Bed, Car, Sparkles, CalendarRange, LogOut } from "lucide-react";
+import {
+  Compass,
+  LayoutDashboard,
+  MapPin,
+  Bed,
+  Car,
+  Sparkles,
+  CalendarRange,
+  LogOut,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { WhatsNewDialog } from "./whats-new-dialog";
 
-export type WorkspaceTab = "destination" | "lodging" | "transport" | "activities" | "itinerary";
+export type WorkspaceTab = "details" | "lodging" | "transport" | "activities" | "itinerary";
 
 const NAV: { value: WorkspaceTab; label: string; icon: typeof MapPin }[] = [
-  { value: "destination", label: "Destination", icon: MapPin },
+  { value: "details", label: "Trip Details", icon: LayoutDashboard },
   { value: "lodging", label: "Lodging", icon: Bed },
   { value: "transport", label: "Transport", icon: Car },
   { value: "activities", label: "Activities", icon: Sparkles },

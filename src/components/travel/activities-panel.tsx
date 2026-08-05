@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { searchActivities } from "@/lib/trip-ai.functions";
 import { Button } from "@/components/ui/button";
-import { ExternalLink, Star, Ticket, CalendarDays } from "lucide-react";
+import { ExternalLink, Star, Ticket, CalendarDays, Sparkles } from "lucide-react";
 import { formatMoney, daysBetween } from "@/lib/workspace-store";
 import { ProviderSetupCard } from "./provider-setup-card";
 
@@ -25,6 +25,11 @@ interface Props {
   endDate: string | null;
   partySize: number;
   numDays: number;
+  /**
+   * Manually-created trips open on a blank slate — nothing is fetched until the
+   * traveler asks for suggestions. AI trips keep browsing on arrival.
+   */
+  autoBrowse: boolean;
   onAdd: (item: {
     kind: "activity";
     title: string;
@@ -44,10 +49,12 @@ export function ActivitiesPanel({
   endDate,
   partySize,
   numDays,
+  autoBrowse,
   onAdd,
 }: Props) {
   const fn = useServerFn(searchActivities);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>("All");
+  const [browsing, setBrowsing] = useState(autoBrowse);
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["activities", destination, interests.join(","), startDate, endDate],
     queryFn: () =>
@@ -60,7 +67,7 @@ export function ActivitiesPanel({
           party_size: partySize,
         },
       }),
-    enabled: destination.length > 0,
+    enabled: browsing && destination.length > 0,
     staleTime: Infinity,
     retry: false,
   });
@@ -69,6 +76,24 @@ export function ActivitiesPanel({
     return (
       <div className="rounded-2xl border border-dashed border-border p-12 text-center text-muted-foreground">
         Pick a destination first.
+      </div>
+    );
+
+  if (!browsing)
+    return (
+      <div
+        className="rounded-2xl border border-dashed border-border p-12 text-center"
+        data-testid="activities-blank-slate"
+      >
+        <Sparkles className="mx-auto h-6 w-6 text-muted-foreground" />
+        <h2 className="mt-3 font-display text-xl font-semibold">No activities yet</h2>
+        <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+          This trip starts empty — nothing has been suggested for you. Browse live events and venues
+          around {destination} whenever you're ready, and add only what you want.
+        </p>
+        <Button className="mt-4" onClick={() => setBrowsing(true)}>
+          <Sparkles className="mr-1 h-4 w-4" /> Browse activities
+        </Button>
       </div>
     );
 

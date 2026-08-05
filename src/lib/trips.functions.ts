@@ -127,6 +127,7 @@ export const updateTripItem = createServerFn({ method: "POST" })
     z
       .object({
         id: z.string().uuid(),
+        category: z.string().max(60).nullable().optional(),
         day_index: z.number().int().nullable().optional(),
         start_time: z.string().nullable().optional(),
         end_time: z.string().nullable().optional(),

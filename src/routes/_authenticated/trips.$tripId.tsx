@@ -5,24 +5,37 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { ChevronLeft } from "lucide-react";
 
-import { getTrip, updateTrip, addTripItem, removeTripItem } from "@/lib/trips.functions";
-import { getRecommendations } from "@/lib/trip-ai.functions";
-import { daysBetween } from "@/lib/workspace-store";
+import {
+  getTrip,
+  updateTrip,
+  addTripItem,
+  removeTripItem,
+  updateTripItem,
+} from "@/lib/trips.functions";
+import {
+  daysBetween,
+  isBookedLodging,
+  LODGING_BOOKED,
+  LODGING_CANDIDATE,
+  type LatLng,
+} from "@/lib/workspace-store";
 import { AppSidebar, type WorkspaceTab } from "@/components/shell/app-sidebar";
 import { TripMetaBar } from "@/components/shell/trip-meta-bar";
 
-import { DestinationPanel } from "@/components/travel/destination-panel";
+import { TripDetailsPanel } from "@/components/travel/trip-details-panel";
 import { LodgingPanel } from "@/components/travel/lodging-panel";
 import { TransportPanel } from "@/components/travel/transport-panel";
 import { ActivitiesPanel } from "@/components/travel/activities-panel";
-import { ItineraryPanel } from "@/components/travel/itinerary-panel";
-import { BudgetRail } from "@/components/travel/budget-rail";
+import { ItineraryPanel, type ItemMove } from "@/components/travel/itinerary-panel";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
+import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
 
-const TABS = ["destination", "lodging", "transport", "activities", "itinerary"] as const;
+const TABS = ["details", "lodging", "transport", "activities", "itinerary"] as const;
 
 export const Route = createFileRoute("/_authenticated/trips/$tripId")({
-  validateSearch: (s) => z.object({ tab: z.enum(TABS).optional() }).parse(s),
+  // `.catch` keeps links to the retired ?tab=destination working — unknown
+  // tabs fall through to the dashboard rather than throwing.
+  validateSearch: (s) => z.object({ tab: z.enum(TABS).optional().catch(undefined) }).parse(s),
   head: ({ params }) => ({
     meta: [
       { title: `Trip ${params.tripId.slice(0, 8)} — Wayfinder` },
@@ -36,7 +49,7 @@ function WorkspacePage() {
   const { tripId } = Route.useParams();
   const { tab: tabParam } = Route.useSearch();
   const navigate = Route.useNavigate();
-  const tab: WorkspaceTab = tabParam ?? "destination";
+  const tab: WorkspaceTab = tabParam ?? "details";
   const setTab = (t: WorkspaceTab) => navigate({ search: { tab: t }, replace: true });
 
   const qc = useQueryClient();
@@ -44,16 +57,18 @@ function WorkspacePage() {
   const updateFn = useServerFn(updateTrip);
   const addFn = useServerFn(addTripItem);
   const removeFn = useServerFn(removeTripItem);
-  const recFn = useServerFn(getRecommendations);
+  const updateItemFn = useServerFn(updateTripItem);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["trip", tripId],
     queryFn: () => getFn({ data: { id: tripId } }),
   });
 
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["trip", tripId] });
+
   const updateMut = useMutation({
     mutationFn: (patch: Record<string, unknown>) => updateFn({ data: { id: tripId, ...patch } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["trip", tripId] }),
+    onSuccess: invalidate,
   });
 
   type NewItem = {
@@ -72,82 +87,89 @@ function WorkspacePage() {
   };
   const addMut = useMutation({
     mutationFn: (item: NewItem) => addFn({ data: item }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["trip", tripId] });
-      toast.success("Added to itinerary");
+    onSuccess: (_res, item) => {
+      invalidate();
+      toast.success(
+        item.category === LODGING_CANDIDATE ? "Added to comparison" : "Added to itinerary",
+      );
     },
   });
 
   const removeMut = useMutation({
     mutationFn: (id: string) => removeFn({ data: { id } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["trip", tripId] }),
+    onSuccess: invalidate,
   });
 
-  type RecVars = {
-    destination: string;
-    start_date: string | null;
-    end_date: string | null;
-    budget_cents: number | null;
-    total_cents: number;
-    itemsSummary: string;
-  };
-  const recMut = useMutation({
-    mutationFn: (vars: RecVars) => recFn({ data: vars }),
+  // Booking is exclusive: the chosen stay becomes the itinerary's lodging block
+  // and any previously booked stay drops back into the comparison list.
+  const bookMut = useMutation({
+    mutationFn: async (id: string) => {
+      const previouslyBooked = (data?.items ?? []).filter((i) => isBookedLodging(i) && i.id !== id);
+      await Promise.all([
+        updateItemFn({ data: { id, category: LODGING_BOOKED } }),
+        ...previouslyBooked.map((i) =>
+          updateItemFn({ data: { id: i.id, category: LODGING_CANDIDATE } }),
+        ),
+      ]);
+    },
+    onSuccess: () => {
+      invalidate();
+      toast.success("Booked — added to your itinerary and budget");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const reorderMut = useMutation({
+    mutationFn: (moves: ItemMove[]) =>
+      Promise.all(
+        moves.map((m) =>
+          updateItemFn({ data: { id: m.id, day_index: m.day_index, sort_order: m.sort_order } }),
+        ),
+      ),
+    onSuccess: invalidate,
+    onError: (err: Error) => toast.error(err.message),
   });
 
   if (isLoading) return <div className="p-10 text-muted-foreground">Loading trip…</div>;
   if (error || !data?.trip) throw notFound();
 
   const { trip, items } = data;
-  const parsed = (trip.parsed_params ?? {}) as {
-    destination?: string | null;
-    origin?: string | null;
-    interests?: string[];
-    travel_mode?: "car" | "flight" | "train" | "unknown" | null;
-    missing_fields?: string[];
+  const parsed = (trip.parsed_params ?? {}) as Partial<ParsedTrip> & {
+    entry_mode?: string;
     waypoints?: string[];
+    origin_coords?: LatLng | null;
+    destination_coords?: LatLng | null;
   };
 
-  const totalCents = items.reduce((s, i) => s + (i.cost_cents ?? 0), 0);
   const numDays = daysBetween(trip.start_date, trip.end_date);
-  // Only a confirmed destination counts — a parsed region stays in curation mode.
+  // Only a confirmed destination counts — a parsed region stays unset.
   const destination = trip.destination ?? "";
   const origin = parsed.origin ?? "";
   const interests = parsed.interests ?? [];
   const waypoints = parsed.waypoints ?? [];
+  const isManualTrip = parsed.entry_mode === "manual";
+  const stays = items.filter((i) => i.kind === "lodging");
+
+  const parsedTrip: ParsedTrip = {
+    destination: parsed.destination ?? null,
+    destination_is_specific: parsed.destination_is_specific ?? false,
+    region_hint: parsed.region_hint ?? null,
+    origin: parsed.origin ?? null,
+    start_date: parsed.start_date ?? null,
+    end_date: parsed.end_date ?? null,
+    party_size: parsed.party_size ?? null,
+    travel_mode: parsed.travel_mode ?? null,
+    interests,
+    budget_cents: parsed.budget_cents ?? null,
+    currency: parsed.currency ?? null,
+    notes: parsed.notes ?? null,
+    missing_fields: parsed.missing_fields ?? [],
+  };
 
   const handleAdd = (item: Omit<NewItem, "trip_id">) => addMut.mutate({ ...item, trip_id: tripId });
 
   const updateWaypoints = (next: string[]) =>
     updateMut.mutate({ parsed_params: { ...parsed, waypoints: next } });
-
-  const refreshTips = () =>
-    recMut.mutate({
-      destination,
-      start_date: trip.start_date,
-      end_date: trip.end_date,
-      budget_cents: trip.budget_cents,
-      total_cents: totalCents,
-      itemsSummary:
-        items
-          .map(
-            (i) =>
-              `- [${i.kind}] Day ${i.day_index ?? "?"}: ${i.title} ($${((i.cost_cents ?? 0) / 100).toFixed(0)})`,
-          )
-          .join("\n") || "(empty)",
-    });
-
-  const rail = (
-    <BudgetRail
-      items={items}
-      budgetCents={trip.budget_cents}
-      currency={trip.currency}
-      onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
-      tips={recMut.data?.tips}
-      onRefreshTips={refreshTips}
-      tipsLoading={recMut.isPending}
-    />
-  );
 
   return (
     <div className="flex min-h-screen bg-background max-lg:flex-col">
@@ -156,7 +178,11 @@ function WorkspacePage() {
       <main className="min-w-0 flex-1 px-6 py-5">
         <div className="mx-auto max-w-7xl">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <TripMetaBar trip={trip} />
+            <TripMetaBar
+              trip={trip}
+              items={items}
+              onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
+            />
             <Link
               to="/trips"
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -167,64 +193,76 @@ function WorkspacePage() {
 
           <MissingFieldsBanner trip={trip} onSave={(patch) => updateMut.mutate(patch)} />
 
-          {tab === "destination" ? (
-            <DestinationPanel
-              parsed={parsed as Parameters<typeof DestinationPanel>[0]["parsed"]}
-              current={destination}
+          {tab === "details" && (
+            <TripDetailsPanel
+              parsed={parsedTrip}
+              destination={destination}
               origin={origin}
+              originCoords={parsed.origin_coords ?? null}
+              destinationCoords={parsed.destination_coords ?? null}
+              startDate={trip.start_date}
+              endDate={trip.end_date}
+              partySize={trip.party_size ?? 2}
+              budgetCents={trip.budget_cents}
               waypoints={waypoints}
+              items={items}
               onPick={(name) => updateMut.mutate({ destination: name, title: name })}
               onUpdateWaypoints={updateWaypoints}
             />
-          ) : (
-            <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-              <div className="min-w-0">
-                {tab === "lodging" && (
-                  <LodgingPanel
-                    destination={destination}
-                    startDate={trip.start_date}
-                    endDate={trip.end_date}
-                    partySize={trip.party_size ?? 2}
-                    interests={interests}
-                    budgetCents={trip.budget_cents}
-                    onAdd={(item) => handleAdd(item)}
-                  />
-                )}
-                {tab === "transport" && (
-                  <TransportPanel
-                    origin={origin}
-                    destination={destination}
-                    mode={parsed.travel_mode ?? null}
-                    partySize={trip.party_size ?? 2}
-                    startDate={trip.start_date}
-                    endDate={trip.end_date}
-                    waypoints={waypoints}
-                    onAdd={(item) => handleAdd(item)}
-                  />
-                )}
-                {tab === "activities" && (
-                  <ActivitiesPanel
-                    destination={destination}
-                    interests={interests}
-                    startDate={trip.start_date}
-                    endDate={trip.end_date}
-                    partySize={trip.party_size ?? 2}
-                    numDays={numDays}
-                    onAdd={(item) => handleAdd(item)}
-                  />
-                )}
-                {tab === "itinerary" && (
-                  <ItineraryPanel
-                    items={items}
-                    numDays={numDays}
-                    startDate={trip.start_date}
-                    onAdd={(item) => handleAdd(item)}
-                    onRemove={(id) => removeMut.mutate(id)}
-                  />
-                )}
-              </div>
-              {rail}
-            </div>
+          )}
+
+          {tab === "lodging" && (
+            <LodgingPanel
+              destination={destination}
+              origin={origin}
+              originCoords={parsed.origin_coords ?? null}
+              startDate={trip.start_date}
+              endDate={trip.end_date}
+              partySize={trip.party_size ?? 2}
+              interests={interests}
+              budgetCents={trip.budget_cents}
+              stays={stays}
+              onAdd={(item) => handleAdd(item)}
+              onBook={(id) => bookMut.mutate(id)}
+              onRemove={(id) => removeMut.mutate(id)}
+            />
+          )}
+
+          {tab === "transport" && (
+            <TransportPanel
+              origin={origin}
+              destination={destination}
+              mode={parsed.travel_mode ?? null}
+              partySize={trip.party_size ?? 2}
+              startDate={trip.start_date}
+              endDate={trip.end_date}
+              waypoints={waypoints}
+              onAdd={(item) => handleAdd(item)}
+            />
+          )}
+
+          {tab === "activities" && (
+            <ActivitiesPanel
+              destination={destination}
+              interests={interests}
+              startDate={trip.start_date}
+              endDate={trip.end_date}
+              partySize={trip.party_size ?? 2}
+              numDays={numDays}
+              autoBrowse={!isManualTrip}
+              onAdd={(item) => handleAdd(item)}
+            />
+          )}
+
+          {tab === "itinerary" && (
+            <ItineraryPanel
+              items={items}
+              numDays={numDays}
+              startDate={trip.start_date}
+              onAdd={(item) => handleAdd(item)}
+              onRemove={(id) => removeMut.mutate(id)}
+              onReorder={(moves) => reorderMut.mutate(moves)}
+            />
           )}
         </div>
       </main>
