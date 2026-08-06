@@ -2,16 +2,6 @@
 -- role ("editor" — full read/write, cannot delete the trip or manage other
 -- collaborators). Phase 1 only: refresh-to-see-changes, no realtime/presence.
 
-CREATE OR REPLACE FUNCTION public.is_trip_member(_trip_id UUID, _user_id UUID)
-RETURNS BOOLEAN
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
-AS $$
-  SELECT EXISTS (SELECT 1 FROM public.trips t WHERE t.id = _trip_id AND t.user_id = _user_id)
-      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = _trip_id AND c.user_id = _user_id);
-$$;
--- SECURITY DEFINER avoids RLS-policy recursion (trips policy -> trip_collaborators
--- policy -> trips policy ...) by running this check outside RLS entirely.
-
 CREATE TABLE public.trip_collaborators (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
@@ -20,6 +10,34 @@ CREATE TABLE public.trip_collaborators (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (trip_id, user_id)
 );
+CREATE INDEX trip_collaborators_trip_idx ON public.trip_collaborators(trip_id);
+CREATE INDEX trip_collaborators_user_idx ON public.trip_collaborators(user_id);
+
+CREATE TABLE public.trip_invites (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('editor')),
+  created_by UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX trip_invites_trip_idx ON public.trip_invites(trip_id);
+CREATE INDEX trip_invites_token_idx ON public.trip_invites(token);
+
+-- Membership check, used by RLS policies below. LANGUAGE sql validates its
+-- body against the catalog at creation time, so both tables above must exist
+-- first. SECURITY DEFINER avoids RLS-policy recursion (trips policy ->
+-- trip_collaborators policy -> trips policy ...) by running this check
+-- outside RLS entirely.
+CREATE OR REPLACE FUNCTION public.is_trip_member(_trip_id UUID, _user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM public.trips t WHERE t.id = _trip_id AND t.user_id = _user_id)
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = _trip_id AND c.user_id = _user_id);
+$$;
+
 GRANT SELECT, DELETE ON public.trip_collaborators TO authenticated;
 GRANT ALL ON public.trip_collaborators TO service_role;
 ALTER TABLE public.trip_collaborators ENABLE ROW LEVEL SECURITY;
@@ -34,18 +52,6 @@ CREATE POLICY "trip_collaborators_delete" ON public.trip_collaborators FOR DELET
   USING (user_id = auth.uid()
       OR EXISTS (SELECT 1 FROM public.trips t WHERE t.id = trip_id AND t.user_id = auth.uid()));
 
-CREATE INDEX trip_collaborators_trip_idx ON public.trip_collaborators(trip_id);
-CREATE INDEX trip_collaborators_user_idx ON public.trip_collaborators(user_id);
-
-CREATE TABLE public.trip_invites (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
-  token TEXT NOT NULL UNIQUE,
-  role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('editor')),
-  created_by UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  revoked_at TIMESTAMPTZ
-);
 GRANT SELECT, INSERT, UPDATE ON public.trip_invites TO authenticated;
 GRANT ALL ON public.trip_invites TO service_role;
 ALTER TABLE public.trip_invites ENABLE ROW LEVEL SECURITY;
@@ -59,9 +65,6 @@ CREATE POLICY "trip_invites_insert" ON public.trip_invites FOR INSERT
       AND EXISTS (SELECT 1 FROM public.trips t WHERE t.id = trip_id AND t.user_id = auth.uid()));
 CREATE POLICY "trip_invites_update" ON public.trip_invites FOR UPDATE
   USING (EXISTS (SELECT 1 FROM public.trips t WHERE t.id = trip_id AND t.user_id = auth.uid()));
-
-CREATE INDEX trip_invites_trip_idx ON public.trip_invites(trip_id);
-CREATE INDEX trip_invites_token_idx ON public.trip_invites(token);
 
 -- Rewrite trips/trip_items RLS: membership-based instead of sole-owner.
 DROP POLICY "Users manage own trips" ON public.trips;
