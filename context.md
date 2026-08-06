@@ -358,7 +358,99 @@ Production has these keys, so the quickest check is the live site.
 
 ---
 
-## 8. Working agreements
+## 8. Incident log: getting v0.4.0 trip sharing live (2026-08-06)
+
+Trip sharing looked done after static gates passed and the code was pushed — it wasn't. Getting
+it actually working in production took seven distinct failures across the DB migration, RLS
+policies, routing, and env config, found only by real two-user browser testing. Logged in order
+hit, so a future session (human or agent) recognizes the symptom fast instead of re-diagnosing
+from scratch. Full technical detail for the RLS/routing bugs is in §3; this is the chronological
+"what broke, in what order, how we knew" version.
+
+1. **Migration fails: `relation "public.trip_collaborators" does not exist`.**
+   Symptom: SQL editor errors on `CREATE FUNCTION is_trip_member` referencing a table that
+   doesn't exist yet. Cause: the function was defined before the tables it queries.
+   `LANGUAGE sql` functions are validated against the catalog at creation time (unlike
+   `plpgsql`, which only syntax-checks), so this fails immediately — nothing else in the script
+   had run yet. Fix: reorder the migration — both tables first, then the function, then every
+   policy that depends on it.
+
+2. **Same error again on retry.** Not a re-occurrence — the user re-ran the *old* copy of the
+   file (from GitHub, which didn't have the fix pushed yet). Lesson: when handing over corrected
+   SQL mid-session, paste the full corrected block directly in chat rather than saying "re-run
+   the file," since the fix may not be pushed/synced anywhere the user would think to re-fetch
+   it from.
+
+3. **`createTrip` fails: `new row violates row-level security policy for table "trips"`,
+   reproduced with a direct REST `INSERT`, even though the JWT's `sub` exactly matched the
+   `user_id` being inserted.** This turned out to be RLS bug #1 in §3 — `trips_select` called
+   `is_trip_member()`, which re-queries `trips`, and that self-query can't see a row still being
+   inserted in the same `INSERT ... RETURNING` statement. Diagnosed by testing the *same* insert
+   twice: once with `Prefer: return=representation` (fails) and once without (succeeds,
+   `201`) — proved the row itself was fine and only the RETURNING-triggered SELECT check failed.
+   Fix: check ownership inline on `trips`' own policies instead of via the helper (§3 bug #1).
+
+4. **After the RLS-policy fix was applied, the join flow got past invite lookup but
+   `getTrip` still failed for the collaborator** (`"Cannot coerce the result to a single JSON
+   object"` — Postgres's `.single()` error for zero rows). A direct REST `SELECT` as the
+   collaborator confirmed `trips` returned `[]` even though the matching `trip_collaborators`
+   row demonstrably existed (checked by ID). This was RLS bug #2 in §3 — the collaborator
+   `EXISTS` subquery's unqualified `id` resolved to `trip_collaborators.id`, not `trips.id`.
+   Diagnosed by directly querying `pg_policies` to confirm the policy text matched what was
+   intended, which it did — meaning the bug was in the *logic*, not a deployment mismatch,
+   which narrowed it to the shadowing issue. Fix: qualify as `trips.id` explicitly.
+
+5. **The join page never rendered — URL matched, but the screen showed "Loading trip…" (the
+   workspace page's loading state) instead of "Joining trip…" (the join page's).** This was the
+   TanStack Router nesting bug in §3: `trips.$tripId.join.tsx` was a *child* route of
+   `trips.$tripId.tsx` by file-naming convention, and the parent renders no `<Outlet/>`, so the
+   child silently never mounted while the parent's own (failing, for a non-member) `getTrip`
+   query ran instead. Diagnosed by inspecting `routeTree.gen.ts`'s generated `getParentRoute`
+   for the join route. Fix: moved the route to `/join/:tripId` (file `join.$tripId.tsx`), which
+   shares no path prefix with the workspace route and is therefore a sibling, not a child.
+
+6. **`redeemInvite` fails: `Missing Supabase environment variable(s): SUPABASE_SERVICE_ROLE_KEY`.**
+   Straightforward — this feature is the first code to ever call `supabaseAdmin`, and the
+   project's Vercel env vars had never needed it before. Fix: add the var in Vercel, redeploy.
+
+7. **Same call fails differently after adding the var: `TypeError: Headers.set: "DROP POLICY
+   ...`.** The *value* pasted into `SUPABASE_SERVICE_ROLE_KEY` was the SQL fix text from earlier
+   in the conversation, not the actual key — an easy mix-up when multiple secrets/snippets are
+   in flight in the same session. Fix: re-copy the actual `service_role` value from the Supabase
+   dashboard.
+
+8. **Same call fails a third way: `"This invite link is no longer valid"`, even though a
+   direct REST query (as the owner) confirmed the invite row existed, unrevoked, exact token
+   match.** The service-role key was now a syntactically plausible secret but still the wrong
+   *value* — turned out to be the anon/publishable key pasted again. This one doesn't error
+   loudly: a low-privilege key still builds a working Supabase client, just one still subject to
+   RLS, so admin-scoped queries just quietly return fewer/zero rows instead of failing outright.
+   Diagnosed with a **temporary, safe diagnostic**: a debug branch in `redeemInvite` that called
+   `supabaseAdmin.auth.admin.listUsers()` (fails with `"User not allowed"` for a non-privileged
+   key — a reliable tell) and a `count`-only query against `trip_invites` (returned `0` despite
+   a real row existing — proof RLS was still being applied, which a genuine service-role key
+   would bypass entirely). Never logged the key itself, only pass/fail behavior. Removed once
+   confirmed. Fix: paste the real `service_role` key (Project Settings → API Keys — it looks
+   nothing like the publishable key).
+
+9. **Test harness (not the app) flake: after a collaborator joined, reloading the *same*
+   Puppeteer page as the owner made the Share button vanish entirely** (`clickByText` returned
+   `false`; the button wasn't in the DOM). Root cause was in the test rig, not the app —
+   Supabase's default refresh-token rotation means a hand-seeded `localStorage` session survives
+   exactly one recovery cycle; a second hard reload of the same page can silently drop the
+   session. Fixed by never reloading a seeded page twice — open a fresh page with a fresh
+   sign-in for each verification step instead (see §5).
+
+**End state:** full flow verified — owner creates trip → generates invite link → second real
+account redeems it and lands in the trip → owner sees them in the Share dialog → collaborator
+adds an item → owner sees it after a refresh. Lodging Book button and Activities URL-fetch
+re-verified in the same pass. All fixes are committed on `main` (commits `df5e850` through
+`9aab1e5`); the corrected migration SQL in `supabase/migrations/20260805000000_trip_collaborators.sql`
+now matches exactly what's live in Supabase.
+
+---
+
+## 9. Working agreements
 
 - **Don't commit or push unless asked.** Verify first — the user has been explicit about
   testing before any commit.
