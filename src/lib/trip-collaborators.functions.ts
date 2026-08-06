@@ -98,10 +98,25 @@ export const redeemInvite = createServerFn({ method: "POST" })
       .maybeSingle();
     if (inviteErr) throw new Error(inviteErr.message);
     if (!invite || invite.revoked_at) {
-      // TEMP DIAGNOSTIC — remove once redemption is confirmed working.
+      // TEMP DIAGNOSTIC — remove once redemption is confirmed working. Never
+      // logs the key itself, only whether admin-only calls succeed with it.
+      const keyLen = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").length;
+      let adminCheck = "unknown";
+      try {
+        const { error: listErr } = await supabaseAdmin.auth.admin.listUsers({
+          page: 1,
+          perPage: 1,
+        });
+        adminCheck = listErr ? `admin-call-failed: ${listErr.message}` : "admin-call-ok";
+      } catch (e) {
+        adminCheck = `admin-call-threw: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      const { count: rawCount } = await supabaseAdmin
+        .from("trip_invites")
+        .select("*", { count: "exact", head: true });
       throw new Error(
         `DEBUG no-invite-found trip_id=${data.trip_id} token_len=${data.token.length} ` +
-          `admin_url=${process.env.SUPABASE_URL ?? "unset"}`,
+          `key_len=${keyLen} admin_check=${adminCheck} total_invite_rows=${rawCount}`,
       );
     }
 
