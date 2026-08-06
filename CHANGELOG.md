@@ -18,13 +18,16 @@ button that pulls in a title, description, and price to review before adding.
 **Trip sharing (invite links)**
 
 - _Technical:_ New `trip_collaborators` and `trip_invites` tables, with `trips`/`trip_items`
-  RLS rewritten from sole-owner (`auth.uid() = user_id`) to membership-based, via a
-  `SECURITY DEFINER` `is_trip_member()` helper (needed to avoid RLS-policy recursion between
-  the two tables). Invite links are opaque tokens; redemption uses the previously-unused
-  `supabaseAdmin` service-role client, since the invitee has no row access to the invite before
-  joining. This round is Phase 1 only — refresh-to-see-changes. Realtime sync (no refresh
-  needed) and a "who's viewing" presence indicator are deferred; neither needs a schema change
-  later.
+  RLS rewritten from sole-owner (`auth.uid() = user_id`) to membership-based. Invite links are
+  opaque tokens redeemed at `/join/:tripId`, using the previously-unused `supabaseAdmin`
+  service-role client since the invitee has no row access to the invite before joining. This
+  round is Phase 1 only — refresh-to-see-changes. Realtime sync (no refresh needed) and a
+  "who's viewing" presence indicator are deferred; neither needs a schema change later.
+  Verified end-to-end in production with two real accounts (invite → join → collaborator
+  write access visible to the owner) — see `context.md` §3 for two RLS subtleties this
+  surfaced (a self-referencing SELECT policy breaking `INSERT ... RETURNING`, and an
+  unqualified column name resolving to the wrong table) worth knowing before touching these
+  policies again.
 - _For everyone:_ Open a trip, hit Share, and copy the link. Anyone who opens it (signing in
   first if needed) joins as a full collaborator — same access as you, including booking stays
   and editing the itinerary. Refresh to see what they've added.

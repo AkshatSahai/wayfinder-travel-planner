@@ -6,7 +6,7 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-05** (after v0.4.0)
+Last updated: **2026-08-06** (after v0.4.0, verified end-to-end in production)
 
 ---
 
@@ -49,6 +49,18 @@ throws `notFound()` (a confusing 404 with no obvious cause).
 Server-only keys, all optional — each provider degrades to a setup card when absent:
 `GOOGLE_API_KEY` (Places + Geocoding), `VITE_GOOGLE_MAPS_KEY` (browser Maps key),
 `DUFFEL_API_KEY` (flights), `EIA_API_KEY` (gas prices), `TICKETMASTER_API_KEY` (events).
+
+**`SUPABASE_SERVICE_ROLE_KEY` (server-only) is required as of v0.4.0** — trip sharing's
+`redeemInvite` and `listCollaborators` are the first code to actually call `supabaseAdmin`
+(`client.server.ts`), previously defined but unused. Without it, joining a trip fails with
+`Missing Supabase environment variable(s): SUPABASE_SERVICE_ROLE_KEY`. This is easy to get
+*subtly* wrong rather than obviously wrong: pasting the **anon/publishable key** into this
+variable by mistake doesn't error — `supabaseAdmin` still builds a working client, just one
+with no more privilege than a normal user, so it silently stays subject to RLS. The tell is
+`supabaseAdmin.auth.admin.*` calls failing with `"User not allowed"`, or an RLS-scoped query
+via `supabaseAdmin` returning fewer rows than actually exist. The real `service_role` key is
+in Supabase dashboard → Project Settings → API Keys, and looks nothing like the publishable
+key — if it looks similar, it's the wrong one.
 
 Supabase project: `cxonflruhbypxfonjtes` → `https://cxonflruhbypxfonjtes.supabase.co`.
 Get keys from the Supabase dashboard (Project Settings → API Keys) or Lovable Cloud.
@@ -132,7 +144,9 @@ not a code change to the existing trip/item server fns.
 
 - **`is_trip_member(trip_id, user_id)`** is `SECURITY DEFINER`. Without that, the `trips` SELECT
   policy subqueries `trip_collaborators`, whose own SELECT policy subqueries `trips` again —
-  real risk of RLS recursion. `SECURITY DEFINER` runs the check once, outside RLS.
+  real risk of RLS recursion. `SECURITY DEFINER` runs the check once, outside RLS. It's used by
+  `trip_items`/`trip_collaborators`/`trip_invites` policies, but **not** by `trips` itself — see
+  the RETURNING gotcha below for why.
 - **`trip_items.user_id` is creator provenance only**, not an access-control key, post-rewrite —
   a collaborator's added items are stamped with their own id, not the trip owner's. Don't
   assume `trip_items.user_id === trips.user_id`.
@@ -147,20 +161,59 @@ not a code change to the existing trip/item server fns.
   Replace with the generated version when convenient.
 - **The `_authenticated` route's post-login redirect now preserves the query string**
   (`window.location.pathname + window.location.search`, and `auth.tsx`'s `navigateToTarget`
-  splits it back out for `navigate()`) — needed so `/trips/:id/join?token=...` survives being
+  splits it back out for `navigate()`) — needed so `/join/:id?token=...` survives being
   bounced through `/auth` for sign-in. Before this fix it silently dropped the token.
-- **Migration applied manually.** Per the "no DDL with only a publishable key" constraint above,
-  this migration was written by an agent and applied by the user directly via the Supabase SQL
-  editor / Lovable — confirm any future collaboration-schema change the same way.
+- **The join route lives at `/join/:tripId`, not `/trips/:tripId/join`.** TanStack Router's
+  flat file convention makes a file whose dot-path *extends* another route's path a **child**
+  of it, rendered only through that parent's `<Outlet/>`. `trips.$tripId.tsx` (the workspace
+  page) renders no `<Outlet/>`, so a `trips.$tripId.join.tsx` file would silently never mount —
+  the URL matches the *parent* workspace route instead, which runs its own `getTrip` and 404s
+  for a non-member. `/join/:tripId` (file `join.$tripId.tsx`) has no shared path prefix with
+  the workspace route, so it's a sibling instead and mounts correctly. If you ever need a route
+  nested under an existing dynamic route, either add `<Outlet/>` to the parent or give the child
+  a non-nested path like this one.
+- **RLS bug #1 — self-referencing SELECT policy breaks `INSERT ... RETURNING`.** The first
+  version of `trips_select`/`trips_update` called `is_trip_member(id, auth.uid())`, which
+  re-queries `trips` internally. Within a single `INSERT ... RETURNING` statement (exactly what
+  `createTrip`'s `.insert().select().single()` compiles to), a row isn't visible to a *separate*
+  sub-query against the same table until the statement completes — so the implicit
+  SELECT-policy check on the just-inserted row always failed, throwing the generic
+  `"new row violates row-level security policy for table trips"`, even though a later, separate
+  `SELECT` worked fine. **Fix:** policies on `trips` check ownership inline
+  (`auth.uid() = user_id`), only subquerying `trip_collaborators` (a different table, never the
+  one being written to) for the collaborator branch. `is_trip_member()` itself stays fine for
+  `trip_items` policies, since it never re-queries `trip_items`.
+- **RLS bug #2 — unqualified column name resolved to the wrong table.** The inline collaborator
+  check first read `EXISTS (SELECT 1 FROM trip_collaborators c WHERE c.trip_id = id AND ...)`.
+  `trip_collaborators` has its own `id` primary key, so the bare `id` resolved to
+  `trip_collaborators.id` (innermost scope wins), not the intended outer `trips.id` — silently
+  comparing a collaborator row's own id to its `trip_id`, never true. This made the entire
+  collaborator branch dead code: a collaborator could redeem an invite (the `trip_collaborators`
+  row was created fine) but then couldn't see the trip at all, while the owner's own access
+  masked the bug in casual testing. **Fix:** qualify explicitly as `trips.id`. General lesson:
+  when writing an RLS policy's subquery against a *different* table, always qualify the outer
+  table's columns explicitly, even when it looks unambiguous — it usually isn't once the other
+  table has a same-named column.
+- **Migration applied manually, and iteratively.** Per the "no DDL with only a publishable key"
+  constraint above, this migration was written by an agent and applied by the user directly via
+  the Supabase SQL editor. It took **four** rounds to get right in production (function/table
+  creation order, the two RLS bugs above, plus a `SUPABASE_SERVICE_ROLE_KEY` misconfiguration on
+  Vercel) — confirmed only by real end-to-end browser testing with two live Supabase users, not
+  by the SQL editor reporting "success" (which just means the SQL was syntactically valid and
+  ran, not that the policies do what you think). Confirm any future collaboration-schema change
+  the same way: two real users, a real invite link, a real second browser session.
 
 ---
 
 ## 4. What shipped recently
 
-### v0.4.0 (sharing, Book button, activities manual+fetch) — not yet committed
+### v0.4.0 (sharing, Book button, activities manual+fetch) — verified end-to-end in production
 1. **Trip sharing, Phase 1.** Invite links, `trip_collaborators`/`trip_invites` tables,
    membership-based RLS. Refresh-to-see-changes only — no realtime, no presence (both deferred,
-   see §7). **The SQL migration must be applied manually before this feature works** — see §3.
+   see §7). Requires `SUPABASE_SERVICE_ROLE_KEY` set correctly on Vercel — see §2. Shipped with
+   three real bugs caught only by full two-user browser verification, not by the migration
+   "succeeding" in the SQL editor — see §3 for all three (RETURNING self-query, column
+   shadowing, join-route nesting).
 2. **Lodging → Book button.** The comparison table's Source column is now a Book action, sharing
    the existing `onBook`/`bookMut` mutation with the detail dialog's "Book this stay" button.
 3. **Activities → manual add + paste-a-link.** A manual-add form (reusing `PlaceAutocomplete`)
@@ -226,6 +279,24 @@ seroval-encoded; plain `curl -d '{"data":{...}}'` fails in `parsePayload` with a
 and then failed forever because the previous run had already moved the item. Read current state,
 act on a *different* target, assert it changed.
 
+**Don't hard-reload a page whose session you manually seeded into `localStorage`.** Supabase
+rotates refresh tokens by default — a hand-built session survives *one* recovery cycle (the
+reload inside the seeding step itself) but a *second* `page.reload()` on that same page can
+silently sign the user out (no redirect, just missing UI state) if the rotated token isn't
+persisted the way a real browser session would be. Fix: never reload a seeded page more than
+once. For "does user B now see what user A did," open a **fresh page with a fresh sign-in**
+instead of reloading — costs one extra REST call, avoids the whole class of flakiness. This bit
+the v0.4.0 collaboration tests specifically (an owner page reloaded to check the Share dialog
+after a collaborator joined).
+
+**RLS bugs are invisible to "the SQL ran without error."** A migration applying cleanly proves
+the SQL is syntactically valid, not that the policy logic is correct — both RLS bugs in §3
+(RETURNING self-query, column shadowing) passed a clean `CREATE POLICY` and only surfaced as
+wrong *behavior* under real multi-user traffic. When debugging "policy exists but access is
+denied/wrong," a disposable `SECURITY INVOKER` SQL function that echoes back
+`auth.uid()`/`auth.role()` (or, cautiously, counts/lists what the caller can actually see) is
+far more useful than staring at the policy text — drop it once you're done.
+
 ---
 
 ## 6. Known gaps — verified vs not
@@ -233,6 +304,12 @@ act on a *different* target, assert it changed.
 **Verified against live Supabase + real browser (25/25 checks, v0.3.0):** booking exclusivity,
 budget excluding candidates, blank-slate activities, drag persistence across reload, dashboard
 cards deriving from real trip state, travel estimate matching hand-checked OSRM output.
+
+**Verified against live Supabase + real browser, two real users, production (v0.4.0):**
+invite-link generation and redemption, collaborator appearing in the Share dialog, a
+collaborator's added item becoming visible to the owner (confirms RLS write access, not just
+UI), Lodging Book button, Activities manual-add, Activities URL-fetch prefill (tested against a
+real Wikipedia page, correctly pulled the `og:title`-derived page title).
 
 **Never exercised — needs keys that aren't in local `.env`:**
 - **Flight** travel estimates (Duffel). Car and train are confirmed working.
@@ -273,9 +350,11 @@ Production has these keys, so the quickest check is the live site.
   provider higher in the tree would be cleaner.
 
 **Housekeeping**
-- Test user `claude-manual-entry-verify@example.com` still exists in Supabase auth. Deleting a
-  user needs the `service_role` key — remove it from the dashboard (Authentication → Users).
-  All of its trip data has been cleaned up.
+- Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
+  and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
+  needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going
+  forward) — remove them from the dashboard (Authentication → Users), or ask for it to be done
+  via `supabaseAdmin.auth.admin.deleteUser()`. All of their trip data has been cleaned up.
 
 ---
 
