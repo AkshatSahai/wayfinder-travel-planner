@@ -97,7 +97,13 @@ export const redeemInvite = createServerFn({ method: "POST" })
       .eq("token", data.token)
       .maybeSingle();
     if (inviteErr) throw new Error(inviteErr.message);
-    if (!invite || invite.revoked_at) throw new Error("This invite link is no longer valid.");
+    if (!invite || invite.revoked_at) {
+      // TEMP DIAGNOSTIC — remove once redemption is confirmed working.
+      throw new Error(
+        `DEBUG no-invite-found trip_id=${data.trip_id} token_len=${data.token.length} ` +
+          `admin_url=${process.env.SUPABASE_URL ?? "unset"}`,
+      );
+    }
 
     const { error: upsertErr } = await supabaseAdmin
       .from("trip_collaborators")
