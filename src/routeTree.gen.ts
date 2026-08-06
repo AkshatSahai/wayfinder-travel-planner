@@ -14,7 +14,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedTripsIndexRouteImport } from './routes/_authenticated/trips.index'
 import { Route as AuthenticatedTripsTripIdRouteImport } from './routes/_authenticated/trips.$tripId'
-import { Route as AuthenticatedTripsTripIdJoinRouteImport } from './routes/_authenticated/trips.$tripId.join'
+import { Route as AuthenticatedJoinTripIdRouteImport } from './routes/_authenticated/join.$tripId'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -41,50 +41,48 @@ const AuthenticatedTripsTripIdRoute =
     path: '/trips/$tripId',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
-const AuthenticatedTripsTripIdJoinRoute =
-  AuthenticatedTripsTripIdJoinRouteImport.update({
-    id: '/join',
-    path: '/join',
-    getParentRoute: () => AuthenticatedTripsTripIdRoute,
-  } as any)
+const AuthenticatedJoinTripIdRoute = AuthenticatedJoinTripIdRouteImport.update({
+  id: '/join/$tripId',
+  path: '/join/$tripId',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
-  '/trips/$tripId': typeof AuthenticatedTripsTripIdRouteWithChildren
+  '/join/$tripId': typeof AuthenticatedJoinTripIdRoute
+  '/trips/$tripId': typeof AuthenticatedTripsTripIdRoute
   '/trips/': typeof AuthenticatedTripsIndexRoute
-  '/trips/$tripId/join': typeof AuthenticatedTripsTripIdJoinRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
-  '/trips/$tripId': typeof AuthenticatedTripsTripIdRouteWithChildren
+  '/join/$tripId': typeof AuthenticatedJoinTripIdRoute
+  '/trips/$tripId': typeof AuthenticatedTripsTripIdRoute
   '/trips': typeof AuthenticatedTripsIndexRoute
-  '/trips/$tripId/join': typeof AuthenticatedTripsTripIdJoinRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
-  '/_authenticated/trips/$tripId': typeof AuthenticatedTripsTripIdRouteWithChildren
+  '/_authenticated/join/$tripId': typeof AuthenticatedJoinTripIdRoute
+  '/_authenticated/trips/$tripId': typeof AuthenticatedTripsTripIdRoute
   '/_authenticated/trips/': typeof AuthenticatedTripsIndexRoute
-  '/_authenticated/trips/$tripId/join': typeof AuthenticatedTripsTripIdJoinRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    '/' | '/auth' | '/trips/$tripId' | '/trips/' | '/trips/$tripId/join'
+  fullPaths: '/' | '/auth' | '/join/$tripId' | '/trips/$tripId' | '/trips/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/trips/$tripId' | '/trips' | '/trips/$tripId/join'
+  to: '/' | '/auth' | '/join/$tripId' | '/trips/$tripId' | '/trips'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/_authenticated/join/$tripId'
     | '/_authenticated/trips/$tripId'
     | '/_authenticated/trips/'
-    | '/_authenticated/trips/$tripId/join'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -130,37 +128,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTripsTripIdRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/trips/$tripId/join': {
-      id: '/_authenticated/trips/$tripId/join'
-      path: '/join'
-      fullPath: '/trips/$tripId/join'
-      preLoaderRoute: typeof AuthenticatedTripsTripIdJoinRouteImport
-      parentRoute: typeof AuthenticatedTripsTripIdRoute
+    '/_authenticated/join/$tripId': {
+      id: '/_authenticated/join/$tripId'
+      path: '/join/$tripId'
+      fullPath: '/join/$tripId'
+      preLoaderRoute: typeof AuthenticatedJoinTripIdRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
   }
 }
 
-interface AuthenticatedTripsTripIdRouteChildren {
-  AuthenticatedTripsTripIdJoinRoute: typeof AuthenticatedTripsTripIdJoinRoute
-}
-
-const AuthenticatedTripsTripIdRouteChildren: AuthenticatedTripsTripIdRouteChildren =
-  {
-    AuthenticatedTripsTripIdJoinRoute: AuthenticatedTripsTripIdJoinRoute,
-  }
-
-const AuthenticatedTripsTripIdRouteWithChildren =
-  AuthenticatedTripsTripIdRoute._addFileChildren(
-    AuthenticatedTripsTripIdRouteChildren,
-  )
-
 interface AuthenticatedRouteRouteChildren {
-  AuthenticatedTripsTripIdRoute: typeof AuthenticatedTripsTripIdRouteWithChildren
+  AuthenticatedJoinTripIdRoute: typeof AuthenticatedJoinTripIdRoute
+  AuthenticatedTripsTripIdRoute: typeof AuthenticatedTripsTripIdRoute
   AuthenticatedTripsIndexRoute: typeof AuthenticatedTripsIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
-  AuthenticatedTripsTripIdRoute: AuthenticatedTripsTripIdRouteWithChildren,
+  AuthenticatedJoinTripIdRoute: AuthenticatedJoinTripIdRoute,
+  AuthenticatedTripsTripIdRoute: AuthenticatedTripsTripIdRoute,
   AuthenticatedTripsIndexRoute: AuthenticatedTripsIndexRoute,
 }
 

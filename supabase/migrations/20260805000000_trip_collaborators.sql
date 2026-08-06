@@ -67,11 +67,29 @@ CREATE POLICY "trip_invites_update" ON public.trip_invites FOR UPDATE
   USING (EXISTS (SELECT 1 FROM public.trips t WHERE t.id = trip_id AND t.user_id = auth.uid()));
 
 -- Rewrite trips/trip_items RLS: membership-based instead of sole-owner.
+--
+-- trips_select/trips_update deliberately do NOT call is_trip_member() here,
+-- unlike trip_items below. is_trip_member() re-queries `trips` internally,
+-- and Postgres RLS's implicit SELECT-policy check on INSERT ... RETURNING
+-- runs within the same statement as the insert — a row is not yet visible
+-- to a *separate* sub-query against the same table until the statement
+-- completes. That made createTrip's `.insert(...).select().single()` (one
+-- INSERT ... RETURNING statement) fail with "new row violates row-level
+-- security policy", even though a plain, later SELECT worked fine. Checking
+-- ownership inline (`auth.uid() = user_id`, no subquery) sidesteps this —
+-- only the collaborator check subqueries a *different* table
+-- (trip_collaborators), which was never the table being written to, so it
+-- has no such visibility problem.
 DROP POLICY "Users manage own trips" ON public.trips;
-CREATE POLICY "trips_select" ON public.trips FOR SELECT USING (public.is_trip_member(id, auth.uid()));
+CREATE POLICY "trips_select" ON public.trips FOR SELECT
+  USING (auth.uid() = user_id
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()));
 CREATE POLICY "trips_insert" ON public.trips FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "trips_update" ON public.trips FOR UPDATE
-  USING (public.is_trip_member(id, auth.uid())) WITH CHECK (public.is_trip_member(id, auth.uid()));
+  USING (auth.uid() = user_id
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()))
+  WITH CHECK (auth.uid() = user_id
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()));
 CREATE POLICY "trips_delete" ON public.trips FOR DELETE USING (auth.uid() = user_id);
 -- Only the owner can delete the trip; collaborators cannot.
 

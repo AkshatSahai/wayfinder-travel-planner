@@ -7,7 +7,7 @@ import { z } from "zod";
 import { Compass, Loader2 } from "lucide-react";
 import { redeemInvite } from "@/lib/trip-collaborators.functions";
 
-export const Route = createFileRoute("/_authenticated/trips/$tripId/join")({
+export const Route = createFileRoute("/_authenticated/join/$tripId")({
   validateSearch: (s) => z.object({ token: z.string().min(10) }).parse(s),
   head: () => ({ meta: [{ title: "Join trip — Wayfinder" }] }),
   component: JoinTripPage,

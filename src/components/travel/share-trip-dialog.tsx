@@ -43,7 +43,7 @@ export function ShareTripDialog({ tripId, open, onOpenChange }: Props) {
   const createMut = useMutation({
     mutationFn: () => createFn({ data: { trip_id: tripId } }),
     onSuccess: ({ token }) => {
-      setLink(`${window.location.origin}/trips/${tripId}/join?token=${token}`);
+      setLink(`${window.location.origin}/join/${tripId}?token=${token}`);
     },
     onError: (err: Error) => toast.error(err.message),
   });
