@@ -80,16 +80,23 @@ CREATE POLICY "trip_invites_update" ON public.trip_invites FOR UPDATE
 -- only the collaborator check subqueries a *different* table
 -- (trip_collaborators), which was never the table being written to, so it
 -- has no such visibility problem.
+-- NOTE: the EXISTS subqueries below qualify the outer reference as
+-- `trips.id`, not bare `id` — trip_collaborators has its own `id` primary
+-- key column, and an unqualified `id` resolves to the innermost scope
+-- (trip_collaborators.id), silently comparing a collaborator row's own id
+-- to its trip_id instead of to the outer trips row. That bug made every
+-- collaborator branch dead code (always false) while the owner branch
+-- masked it in casual testing.
 DROP POLICY "Users manage own trips" ON public.trips;
 CREATE POLICY "trips_select" ON public.trips FOR SELECT
   USING (auth.uid() = user_id
-      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()));
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = trips.id AND c.user_id = auth.uid()));
 CREATE POLICY "trips_insert" ON public.trips FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "trips_update" ON public.trips FOR UPDATE
   USING (auth.uid() = user_id
-      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()))
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = trips.id AND c.user_id = auth.uid()))
   WITH CHECK (auth.uid() = user_id
-      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = id AND c.user_id = auth.uid()));
+      OR EXISTS (SELECT 1 FROM public.trip_collaborators c WHERE c.trip_id = trips.id AND c.user_id = auth.uid()));
 CREATE POLICY "trips_delete" ON public.trips FOR DELETE USING (auth.uid() = user_id);
 -- Only the owner can delete the trip; collaborators cannot.
 
