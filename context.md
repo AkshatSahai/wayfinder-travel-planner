@@ -6,7 +6,7 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-05** (after v0.3.0)
+Last updated: **2026-08-05** (after v0.4.0)
 
 ---
 
@@ -123,9 +123,50 @@ existing style, or migrate all of them at once.
 Providers are imported with dynamic `import()` inside handlers so a missing key fails at call
 time as a catchable error (surfaced via `ProviderSetupCard`) rather than at module load.
 
+### Trip sharing (v0.4.0) — membership-based RLS, not app-level checks
+
+Collaboration is enforced entirely by Postgres RLS, same as everything else in this codebase —
+`trips.functions.ts` never adds `.eq("user_id", ...)` filters, so extending access to
+collaborators is a pure RLS change (`supabase/migrations/20260805000000_trip_collaborators.sql`),
+not a code change to the existing trip/item server fns.
+
+- **`is_trip_member(trip_id, user_id)`** is `SECURITY DEFINER`. Without that, the `trips` SELECT
+  policy subqueries `trip_collaborators`, whose own SELECT policy subqueries `trips` again —
+  real risk of RLS recursion. `SECURITY DEFINER` runs the check once, outside RLS.
+- **`trip_items.user_id` is creator provenance only**, not an access-control key, post-rewrite —
+  a collaborator's added items are stamped with their own id, not the trip owner's. Don't
+  assume `trip_items.user_id === trips.user_id`.
+- **`supabaseAdmin` (`client.server.ts`) now has two real call sites**, both in
+  `trip-collaborators.functions.ts`: `redeemInvite` (the invitee has zero row access to
+  `trip_invites` before joining, so token lookup must bypass RLS) and `listCollaborators`
+  (collaborator emails live in `auth.users`, unreachable via the user-scoped client). It was
+  previously defined but unused anywhere.
+- **`src/integrations/supabase/types.ts` has hand-added entries** for `trip_collaborators` and
+  `trip_invites` (marked inline) ahead of a real `supabase gen types typescript` regeneration —
+  the file's header says "do not edit directly," and this is a deliberate, temporary exception.
+  Replace with the generated version when convenient.
+- **The `_authenticated` route's post-login redirect now preserves the query string**
+  (`window.location.pathname + window.location.search`, and `auth.tsx`'s `navigateToTarget`
+  splits it back out for `navigate()`) — needed so `/trips/:id/join?token=...` survives being
+  bounced through `/auth` for sign-in. Before this fix it silently dropped the token.
+- **Migration applied manually.** Per the "no DDL with only a publishable key" constraint above,
+  this migration was written by an agent and applied by the user directly via the Supabase SQL
+  editor / Lovable — confirm any future collaboration-schema change the same way.
+
 ---
 
 ## 4. What shipped recently
+
+### v0.4.0 (sharing, Book button, activities manual+fetch) — not yet committed
+1. **Trip sharing, Phase 1.** Invite links, `trip_collaborators`/`trip_invites` tables,
+   membership-based RLS. Refresh-to-see-changes only — no realtime, no presence (both deferred,
+   see §7). **The SQL migration must be applied manually before this feature works** — see §3.
+2. **Lodging → Book button.** The comparison table's Source column is now a Book action, sharing
+   the existing `onBook`/`bookMut` mutation with the detail dialog's "Book this stay" button.
+3. **Activities → manual add + paste-a-link.** A manual-add form (reusing `PlaceAutocomplete`)
+   sits above the browse gate; a new URL-metadata fetch (`url-metadata.server.ts`, hand-rolled
+   OG-tag regex, no scraping dependency) prefills empty form fields from a pasted link, always
+   reviewed before adding.
 
 ### v0.2.0 (manual entry) — commit `893fc67`
 Landing page gained a **"Plan with AI" | "Plan it myself"** toggle. Manual mode collects
@@ -211,8 +252,17 @@ Production has these keys, so the quickest check is the live site.
   The panel correctly reports unavailable. A replacement live hotel source is the top item.
 
 **Requested but not built**
-- Smart paste for Airbnb/VRBO/Amtrak links → auto-fill the lodging form (the spec's "pasted-link
-  fetch once built" — the comparison table is already built to receive it).
+- **Realtime sync for shared trips (Phase 2)** — subscribe to Supabase `postgres_changes` on
+  `trips`/`trip_items` filtered by `trip_id`, call the existing `invalidate()` chokepoint in
+  `trips.$tripId.tsx` from the event handler. No schema change needed, additive on top of v0.4.0.
+- **Presence indicator (Phase 3)** — "who's viewing this trip," ordered after Phase 2 since it
+  needs the same realtime channel plumbing.
+- **Owner vs. shared badge** in `trips.index.tsx` — `listTrips` now also returns trips the user
+  collaborates on (as of v0.4.0's RLS rewrite), but the list doesn't select `user_id` so there's
+  no visual distinction yet.
+- Smart paste for Airbnb/VRBO/Amtrak links → auto-fill the Lodging/Transport forms. Activities
+  got its own paste-a-link fetch in v0.4.0; the shared abstraction wasn't built preemptively —
+  extending it to Lodging/Transport is the natural next step now that it's tested once.
 - No live rail API. Train estimates are a labelled heuristic: road miles ÷ 50 mph + 1h.
 
 **Worth considering**

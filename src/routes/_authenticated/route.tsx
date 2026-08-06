@@ -6,7 +6,12 @@ export const Route = createFileRoute("/_authenticated")({
   beforeLoad: async () => {
     const { data, error } = await supabase.auth.getUser();
     if (error || !data.user)
-      throw redirect({ to: "/auth", search: { redirect: window.location.pathname } });
+      throw redirect({
+        to: "/auth",
+        // Preserve the query string, not just the path — the join-trip flow
+        // needs its `?token=...` to survive the bounce through sign-in.
+        search: { redirect: window.location.pathname + window.location.search },
+      });
     return { user: data.user };
   },
   component: () => <Outlet />,

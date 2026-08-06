@@ -118,12 +118,88 @@ export type Database = {
         };
         Relationships: [];
       };
+      // Hand-added ahead of a `supabase gen types typescript` regeneration —
+      // see context.md §3 (trip sharing). Replace with the real generated
+      // block once the migration has been applied and types regenerated.
+      trip_collaborators: {
+        Row: {
+          id: string;
+          trip_id: string;
+          user_id: string;
+          role: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          trip_id: string;
+          user_id: string;
+          role?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          trip_id?: string;
+          user_id?: string;
+          role?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "trip_collaborators_trip_id_fkey";
+            columns: ["trip_id"];
+            isOneToOne: false;
+            referencedRelation: "trips";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      trip_invites: {
+        Row: {
+          id: string;
+          trip_id: string;
+          token: string;
+          role: string;
+          created_by: string;
+          created_at: string;
+          revoked_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          trip_id: string;
+          token: string;
+          role?: string;
+          created_by: string;
+          created_at?: string;
+          revoked_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          trip_id?: string;
+          token?: string;
+          role?: string;
+          created_by?: string;
+          created_at?: string;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "trip_invites_trip_id_fkey";
+            columns: ["trip_id"];
+            isOneToOne: false;
+            referencedRelation: "trips";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      is_trip_member: {
+        Args: { _trip_id: string; _user_id: string };
+        Returns: boolean;
+      };
     };
     Enums: {
       [_ in never]: never;

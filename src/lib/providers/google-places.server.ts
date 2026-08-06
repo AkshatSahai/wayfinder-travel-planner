@@ -1,12 +1,13 @@
 // Google Places API (New) + Geocoding adapter. Server-only.
 // Requires GOOGLE_API_KEY with Places API (New) + Geocoding API enabled.
 
+import type { ActivityCategory } from "@/lib/activity-categories";
+
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
 const GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json";
 const TIMEOUT_MS = 8000;
 
-export type ActivityCategory =
-  "Food" | "Nature" | "Activity" | "Relaxation" | "Nightlife" | "Spa" | "Culture";
+export type { ActivityCategory };
 
 const CATEGORY_QUERIES: Record<ActivityCategory, string> = {
   Food: "top restaurants",

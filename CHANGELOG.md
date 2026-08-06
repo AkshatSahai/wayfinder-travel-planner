@@ -1,5 +1,65 @@
 # Wayfinder Changelog
 
+## v0.4.0 — 2026-08-05
+
+### Overview
+
+Trips stop being single-player. Anyone with an invite link can join a trip as a full
+collaborator and edit lodging, activities, transport, and the itinerary alongside the owner
+(refresh to see their changes — live sync is next). Lodging comparisons end in one click: the
+table's Source column is now a Book button, wired to the same booking logic as the detail
+dialog. And Activities gets a real "add your own" path — a manual form, plus a paste-a-link
+button that pulls in a title, description, and price to review before adding.
+
+### Updates
+
+#### New Features
+
+**Trip sharing (invite links)**
+
+- _Technical:_ New `trip_collaborators` and `trip_invites` tables, with `trips`/`trip_items`
+  RLS rewritten from sole-owner (`auth.uid() = user_id`) to membership-based, via a
+  `SECURITY DEFINER` `is_trip_member()` helper (needed to avoid RLS-policy recursion between
+  the two tables). Invite links are opaque tokens; redemption uses the previously-unused
+  `supabaseAdmin` service-role client, since the invitee has no row access to the invite before
+  joining. This round is Phase 1 only — refresh-to-see-changes. Realtime sync (no refresh
+  needed) and a "who's viewing" presence indicator are deferred; neither needs a schema change
+  later.
+- _For everyone:_ Open a trip, hit Share, and copy the link. Anyone who opens it (signing in
+  first if needed) joins as a full collaborator — same access as you, including booking stays
+  and editing the itinerary. Refresh to see what they've added.
+
+**Book directly from the comparison table**
+
+- _Technical:_ The Lodging table's Source column is replaced with a Book action per row,
+  calling the same `onBook` prop the detail dialog's "Book this stay" button already used —
+  one mutation, two entry points.
+- _For everyone:_ You no longer have to open a stay's details just to book it — Book is right
+  there in the table.
+
+**Add your own activities, with a paste-a-link shortcut**
+
+- _Technical:_ A new manual-add form (name, category, optional date/time/duration/cost/
+  location/notes/source link) sits above the browse section in Activities, using the same
+  `PlaceAutocomplete` component as Lodging. A new `fetchLinkMetadata` server fn and
+  `url-metadata.server.ts` provider fetch a pasted link and parse Open Graph tags
+  (title/description/image/price) with a small regex — no scraping library added, since OG
+  tags are designed to be trivially readable and a full HTML parser would be overkill for a
+  handful of `<meta>` tags. Fetched fields only prefill empty inputs and are never added
+  without the traveler reviewing and confirming.
+- _For everyone:_ Know exactly where you want to go? Add it directly. Have a link to a
+  restaurant or listing? Paste it and we'll try to pull in the details for you to check over
+  before adding — location isn't reliably guessable from a link, so that one's still on you.
+
+#### Upcoming
+
+- Realtime sync for shared trips (no refresh needed), then a "who's viewing" presence
+  indicator.
+- Owner vs. shared badge in the trip list.
+- Smart paste for Airbnb/VRBO/Amtrak links in Lodging and Transport (Activities' version
+  ships this round; the shared abstraction wasn't built preemptively).
+- Replacement live hotel data source (TravelPayouts is discontinued).
+
 ## v0.3.0 — 2026-08-05
 
 ### Overview

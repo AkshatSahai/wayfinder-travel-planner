@@ -6,17 +6,10 @@ import { Button } from "@/components/ui/button";
 import { ExternalLink, Star, Ticket, CalendarDays, Sparkles } from "lucide-react";
 import { formatMoney, daysBetween } from "@/lib/workspace-store";
 import { ProviderSetupCard } from "./provider-setup-card";
+import { ActivityManualForm } from "./activity-manual-form";
+import { ACTIVITY_CATEGORIES } from "@/lib/activity-categories";
 
-const CATEGORIES = [
-  "All",
-  "Food",
-  "Nature",
-  "Activity",
-  "Relaxation",
-  "Nightlife",
-  "Spa",
-  "Culture",
-] as const;
+const CATEGORIES = ["All", ...ACTIVITY_CATEGORIES] as const;
 
 interface Props {
   destination: string;
@@ -37,6 +30,7 @@ interface Props {
     category: string;
     cost_cents: number;
     day_index: number;
+    start_time?: string | null;
     details?: Record<string, unknown>;
     source_url?: string;
   }) => void;
@@ -79,24 +73,6 @@ export function ActivitiesPanel({
       </div>
     );
 
-  if (!browsing)
-    return (
-      <div
-        className="rounded-2xl border border-dashed border-border p-12 text-center"
-        data-testid="activities-blank-slate"
-      >
-        <Sparkles className="mx-auto h-6 w-6 text-muted-foreground" />
-        <h2 className="mt-3 font-display text-xl font-semibold">No activities yet</h2>
-        <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          This trip starts empty — nothing has been suggested for you. Browse live events and venues
-          around {destination} whenever you're ready, and add only what you want.
-        </p>
-        <Button className="mt-4" onClick={() => setBrowsing(true)}>
-          <Sparkles className="mr-1 h-4 w-4" /> Browse activities
-        </Button>
-      </div>
-    );
-
   const places = data?.places.filter((a) => cat === "All" || a.category === cat) ?? [];
 
   const dayIndexFor = (localDate: string): number => {
@@ -107,22 +83,47 @@ export function ActivitiesPanel({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-display text-xl font-semibold">Things to do</h2>
-          <p className="text-sm text-muted-foreground">
-            Live events for your dates (Ticketmaster) + venues from Google Places.
+      <ActivityManualForm
+        destination={destination}
+        startDate={startDate}
+        endDate={endDate}
+        numDays={numDays}
+        onAdd={onAdd}
+      />
+
+      {!browsing ? (
+        <div
+          className="rounded-2xl border border-dashed border-border p-12 text-center"
+          data-testid="activities-blank-slate"
+        >
+          <Sparkles className="mx-auto h-6 w-6 text-muted-foreground" />
+          <h2 className="mt-3 font-display text-xl font-semibold">No activities yet</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+            This trip starts empty — nothing has been suggested for you. Browse live events and
+            venues around {destination} whenever you're ready, and add only what you want.
           </p>
+          <Button className="mt-4" onClick={() => setBrowsing(true)}>
+            <Sparkles className="mr-1 h-4 w-4" /> Browse activities
+          </Button>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          {isFetching ? "…" : "Refresh"}
-        </Button>
-      </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Things to do</h2>
+              <p className="text-sm text-muted-foreground">
+                Live events for your dates (Ticketmaster) + venues from Google Places.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              {isFetching ? "…" : "Refresh"}
+            </Button>
+          </div>
 
-      {isLoading && <div className="h-40 animate-pulse rounded-xl bg-muted/40" />}
+          {isLoading && <div className="h-40 animate-pulse rounded-xl bg-muted/40" />}
 
-      {/* ---- Events during the trip ---- */}
-      {!isLoading && (
+          {/* ---- Events during the trip ---- */}
+          {!isLoading && (
         <section className="space-y-3">
           <h3 className="flex items-center gap-2 font-display text-lg font-semibold">
             <Ticket className="h-4 w-4 text-primary" /> Events during your trip
@@ -317,7 +318,9 @@ export function ActivitiesPanel({
               </div>
             ))}
           </div>
-        </section>
+            </section>
+          )}
+        </>
       )}
     </div>
   );

@@ -1,9 +1,11 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, getRouteApi, Link, notFound } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Share2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 import {
   getTrip,
@@ -28,7 +30,10 @@ import { TransportPanel } from "@/components/travel/transport-panel";
 import { ActivitiesPanel } from "@/components/travel/activities-panel";
 import { ItineraryPanel, type ItemMove } from "@/components/travel/itinerary-panel";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
+import { ShareTripDialog } from "@/components/travel/share-trip-dialog";
 import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
+
+const authRoute = getRouteApi("/_authenticated");
 
 const TABS = ["details", "lodging", "transport", "activities", "itinerary"] as const;
 
@@ -51,6 +56,8 @@ function WorkspacePage() {
   const navigate = Route.useNavigate();
   const tab: WorkspaceTab = tabParam ?? "details";
   const setTab = (t: WorkspaceTab) => navigate({ search: { tab: t }, replace: true });
+  const { user } = authRoute.useRouteContext();
+  const [shareOpen, setShareOpen] = useState(false);
 
   const qc = useQueryClient();
   const getFn = useServerFn(getTrip);
@@ -183,13 +190,22 @@ function WorkspacePage() {
               items={items}
               onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
             />
-            <Link
-              to="/trips"
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ChevronLeft className="h-4 w-4" /> All trips
-            </Link>
+            <div className="flex items-center gap-3">
+              {trip.user_id === user.id && (
+                <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
+                  <Share2 className="mr-1 h-4 w-4" /> Share
+                </Button>
+              )}
+              <Link
+                to="/trips"
+                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+              >
+                <ChevronLeft className="h-4 w-4" /> All trips
+              </Link>
+            </div>
           </div>
+
+          <ShareTripDialog tripId={tripId} open={shareOpen} onOpenChange={setShareOpen} />
 
           <MissingFieldsBanner trip={trip} onSave={(patch) => updateMut.mutate(patch)} />
 

@@ -309,7 +309,7 @@ export function LodgingPanel({
                       onClick={() => toggleSort("cost")}
                     />
                     <th className="px-3 py-2 font-medium">Nights</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">Book</th>
                     <th className="px-3 py-2" />
                   </tr>
                 </thead>
@@ -338,8 +338,21 @@ export function LodgingPanel({
                       <td className="px-3 py-2.5 text-muted-foreground">
                         {(stayDetails(r.item).nights as number | undefined) ?? nights}
                       </td>
-                      <td className="px-3 py-2.5 capitalize text-muted-foreground">
-                        {staySource(r.item)}
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        {r.booked ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-primary">
+                            <Check className="h-3.5 w-3.5" /> Booked
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            data-testid="lodging-book-btn"
+                            onClick={() => onBook(r.item.id)}
+                          >
+                            Book
+                          </Button>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right">
                         <button

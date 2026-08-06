@@ -29,6 +29,18 @@ function postAuthTarget(redirect: string | undefined): string {
   return redirect ?? "/";
 }
 
+// `redirect` may carry its own query string (e.g. the join-trip flow's
+// `?token=...`) — split it out so it survives navigate() as `search` rather
+// than being swallowed as part of an opaque `to` string.
+function navigateToTarget(navigate: ReturnType<typeof useNavigate>, redirect: string | undefined) {
+  const target = postAuthTarget(redirect);
+  const [path, query] = target.split("?");
+  navigate({
+    to: path,
+    search: query ? Object.fromEntries(new URLSearchParams(query)) : undefined,
+  });
+}
+
 function AuthPage() {
   const { redirect } = Route.useSearch();
   const navigate = useNavigate();
@@ -39,7 +51,7 @@ function AuthPage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: postAuthTarget(redirect) });
+      if (data.session) navigateToTarget(navigate, redirect);
     });
   }, [navigate, redirect]);
 
@@ -55,7 +67,7 @@ function AuthPage() {
         redirect_uri: window.location.origin + "/auth",
       });
       if (res.error) toast.error(res.error.message);
-      if (!res.redirected && !res.error) navigate({ to: postAuthTarget(redirect) });
+      if (!res.redirected && !res.error) navigateToTarget(navigate, redirect);
       return;
     }
 
@@ -80,7 +92,7 @@ function AuthPage() {
         if (error) throw error;
         if (data.session) {
           // Auto-confirm is on: the new user is already signed in.
-          navigate({ to: postAuthTarget(redirect) });
+          navigateToTarget(navigate, redirect);
         } else {
           toast.success("Account created. Check your email to confirm, then sign in.");
           setMode("signin");
@@ -88,7 +100,7 @@ function AuthPage() {
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        navigate({ to: postAuthTarget(redirect) });
+        navigateToTarget(navigate, redirect);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Auth failed");
