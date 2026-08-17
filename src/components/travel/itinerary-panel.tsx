@@ -21,7 +21,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X, Plus, Bed, Car, Sparkles, Coffee, GripVertical } from "lucide-react";
+import { X, Plus, Bed, Car, Sparkles, Coffee, GripVertical, SendHorizonal } from "lucide-react";
 import { formatMoney, committedItems } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -35,10 +35,17 @@ export interface ItemMove {
   sort_order: number;
 }
 
+export type ItineraryChatMessage = { role: "user" | "assistant"; content: string };
+
 interface Props {
   items: Item[];
   numDays: number;
   startDate: string | null;
+  chat: {
+    messages: ItineraryChatMessage[];
+    pending: boolean;
+    onSend: (text: string) => void;
+  };
   onAdd: (item: {
     kind: "block";
     title: string;
@@ -51,10 +58,26 @@ interface Props {
   onReorder: (moves: ItemMove[]) => void;
 }
 
-export function ItineraryPanel({ items, numDays, startDate, onAdd, onRemove, onReorder }: Props) {
+export function ItineraryPanel({
+  items,
+  numDays,
+  startDate,
+  chat,
+  onAdd,
+  onRemove,
+  onReorder,
+}: Props) {
   const [blockDay, setBlockDay] = useState<number | null>(null);
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
+  const [chatInput, setChatInput] = useState("");
+
+  const sendChat = () => {
+    const text = chatInput.trim();
+    if (!text || chat.pending) return;
+    chat.onSend(text);
+    setChatInput("");
+  };
 
   // Lodging still under comparison, and activities still staged on the
   // Activities tab, never reach the itinerary.
@@ -144,8 +167,60 @@ export function ItineraryPanel({ items, numDays, startDate, onAdd, onRemove, onR
       <div>
         <h2 className="font-display text-xl font-semibold">Day by day</h2>
         <p className="text-sm text-muted-foreground">
-          Drag any item to reorder it, or move it to another day.
+          Drag any item to reorder it, or move it to another day — or just ask below.
         </p>
+      </div>
+
+      {/* Conversational editing. The assistant applies changes directly; every
+          batch is undoable from its confirmation toast. */}
+      <div
+        className="rounded-2xl border border-border bg-card p-4 shadow-soft"
+        data-testid="itinerary-chat"
+      >
+        <div className="max-h-48 space-y-2 overflow-y-auto">
+          {chat.messages.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Tell me what to change — "move the aquarium to day 3", "remove the boat tour", "swap
+              days 1 and 2", "add dinner at a steakhouse on day 2" — and I'll update the plan.
+            </p>
+          )}
+          {chat.messages.map((m, i) => (
+            <div
+              key={i}
+              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                m.role === "user"
+                  ? "ml-auto bg-sidebar-active text-white"
+                  : "bg-muted text-foreground"
+              }`}
+            >
+              {m.content}
+            </div>
+          ))}
+          {chat.pending && (
+            <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+              …
+            </div>
+          )}
+        </div>
+        <div className="mt-3 flex gap-2">
+          <Input
+            placeholder="Ask for a change…"
+            value={chatInput}
+            data-testid="itinerary-chat-input"
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") sendChat();
+            }}
+          />
+          <Button
+            size="icon"
+            onClick={sendChat}
+            data-testid="itinerary-chat-send"
+            disabled={!chatInput.trim() || chat.pending}
+          >
+            <SendHorizonal className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <DndContext

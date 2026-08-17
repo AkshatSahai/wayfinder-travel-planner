@@ -75,6 +75,56 @@ export function stagedActivities<T extends ItemLike>(items: T[]): T[] {
   return items.filter(isStagedActivity);
 }
 
+// -------- Itinerary ordering --------
+// Anything that places rows on a day must funnel through here.
+//
+// Both the AI planner (A2) and the itinerary chat (A3) hand back a day plus a
+// position, and neither sees the rows already sitting on that day — the planner
+// is only given staged activities, and the chat only names what it is changing.
+// Applied verbatim their positions collide with existing rows, including the
+// booked lodging block, which makes intra-day order arbitrary and destabilises
+// the next drag. Renumbering every row on each touched day is the fix.
+
+export interface OrderableRow {
+  id: string;
+  /** Minutes since midnight, when a time is known — used to order the day. */
+  minutes: number | null;
+  /** Existing position, used to break ties and to keep untimed rows stable. */
+  prior: number;
+}
+
+/** Minutes since midnight from an "HH:MM" string, or null if unparseable. */
+export function minutesFromClock(hhmm: string | null | undefined): number | null {
+  if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+/** Minutes since midnight from a timestamp column value, or null. */
+export function minutesFromTimestamp(ts: string | null | undefined): number | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? null : d.getHours() * 60 + d.getMinutes();
+}
+
+/**
+ * Assign each row a unique 0-based position within its day: timed rows first in
+ * clock order, untimed rows after them keeping their previous relative order.
+ * Returns id → new sort_order.
+ */
+export function renumberDay(rows: OrderableRow[]): Map<string, number> {
+  const order = new Map<string, number>();
+  rows
+    .slice()
+    .sort((a, b) => {
+      const ma = a.minutes ?? Number.MAX_SAFE_INTEGER;
+      const mb = b.minutes ?? Number.MAX_SAFE_INTEGER;
+      return ma - mb || a.prior - b.prior;
+    })
+    .forEach((r, i) => order.set(r.id, i));
+  return order;
+}
+
 // -------- Geo --------
 export interface LatLng {
   lat: number;
