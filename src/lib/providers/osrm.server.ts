@@ -35,6 +35,55 @@ export interface DrivingRoute {
   stop_count: number;
 }
 
+export interface CoordRoute {
+  total_miles: number;
+  total_hours: number;
+  /** Duration of each hop, in the order the stops were given. */
+  leg_hours: number[];
+  /** Road geometry as [lat, lng] pairs, for drawing the route on a map. */
+  path: { lat: number; lng: number }[];
+}
+
+/**
+ * Route a sequence of already-known coordinates — for a single day's stops.
+ *
+ * Deliberately separate from `getDrivingRoute`, which takes place-name strings
+ * and geocodes each one through Nominatim. Nominatim asks for ~1 request/second,
+ * so routing a day of six stops by name would be slow and rate-limited. Activity
+ * coordinates are already stored in `details.coords`, so use them.
+ *
+ * Requests full geometry so the real road path can be drawn rather than
+ * straight lines between pins.
+ */
+export async function getRouteForCoords(
+  points: { lat: number; lng: number }[],
+): Promise<CoordRoute | null> {
+  if (points.length < 2) return null;
+  const path = points.map((p) => `${p.lng},${p.lat}`).join(";");
+  const url = `${OSRM_URL}/${path}?overview=full&geometries=geojson`;
+  const res = await withTimeout(fetch(url, { headers: { "User-Agent": USER_AGENT } }));
+  if (!res.ok) throw new Error(`osrm route failed: ${res.status}`);
+  const json = (await res.json()) as {
+    code: string;
+    routes?: {
+      distance: number;
+      duration: number;
+      legs?: { duration: number }[];
+      geometry?: { coordinates: [number, number][] };
+    }[];
+  };
+  const route = json.routes?.[0];
+  if (json.code !== "Ok" || !route) return null;
+
+  return {
+    total_miles: route.distance / 1609.34,
+    total_hours: route.duration / 3600,
+    leg_hours: (route.legs ?? []).map((l) => l.duration / 3600),
+    // OSRM geojson is [lng, lat]; Google wants {lat, lng}.
+    path: (route.geometry?.coordinates ?? []).map(([lng, lat]) => ({ lat, lng })),
+  };
+}
+
 // Route origin → (waypoints…) → destination as one chained OSRM path.
 export async function getDrivingRoute(
   origin: string,

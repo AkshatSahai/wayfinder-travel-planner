@@ -24,6 +24,14 @@ interface Props {
   origin: string | null;
   waypoints: string[];
   selectedPinId?: string | null;
+  /**
+   * Pre-computed road geometry (from OSRM) to draw instead of asking Google's
+   * Directions service. Used by the itinerary day map, where the stop order is
+   * already decided and the drive estimate comes from the server.
+   */
+  routePath?: { lat: number; lng: number }[] | null;
+  /** Numbers the pins 1..n to show the day's visiting order. */
+  numbered?: boolean;
   onPinClick?: (pin: MapCardPin) => void;
   onAddStop?: (name: string) => void;
 }
@@ -102,16 +110,44 @@ export function DestinationMap(props: Props) {
   );
 }
 
+/**
+ * Draws a pre-computed road path. Kept separate from RoutesLayer, which asks
+ * Google's Directions service to work the route out; here the order and the
+ * geometry are already decided server-side by OSRM.
+ */
+function PathLayer({ path }: { path: { lat: number; lng: number }[] }) {
+  const map = useMap();
+  const mapsLib = useMapsLibrary("maps");
+  useEffect(() => {
+    if (!map || !mapsLib || path.length < 2) return;
+    const line = new mapsLib.Polyline({
+      path,
+      strokeColor: "#1d5a41",
+      strokeOpacity: 0.85,
+      strokeWeight: 4,
+    });
+    line.setMap(map);
+    const bounds = new google.maps.LatLngBounds();
+    path.forEach((p) => bounds.extend(p));
+    map.fitBounds(bounds, 48);
+    return () => line.setMap(null);
+  }, [map, mapsLib, path]);
+  return null;
+}
+
 function InnerMap({
   pins,
   routeDestination,
   origin,
   waypoints,
   selectedPinId,
+  routePath,
+  numbered,
   onPinClick,
   onAddStop,
 }: Props) {
   const showRoutes = Boolean(routeDestination && origin);
+  const hasPath = Boolean(routePath && routePath.length > 1);
   return (
     <div
       className="h-full min-h-[320px] overflow-hidden rounded-2xl shadow-card"
@@ -129,7 +165,8 @@ function InnerMap({
         {showRoutes && (
           <RoutesLayer origin={origin!} destination={routeDestination!} waypoints={waypoints} />
         )}
-        {pins.map((p) => (
+        {hasPath && <PathLayer path={routePath!} />}
+        {pins.map((p, idx) => (
           <AdvancedMarker
             key={p.id}
             position={{ lat: p.lat, lng: p.lng }}
@@ -138,7 +175,11 @@ function InnerMap({
             <div
               className={`flex w-44 items-center gap-2 rounded-xl bg-white p-2 text-left shadow-card transition-transform hover:scale-105 ${selectedPinId === p.id ? "ring-2 ring-primary" : ""}`}
             >
-              {p.photo_url ? (
+              {numbered ? (
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-active text-sm font-semibold text-white">
+                  {idx + 1}
+                </div>
+              ) : p.photo_url ? (
                 <img
                   src={p.photo_url}
                   alt=""
