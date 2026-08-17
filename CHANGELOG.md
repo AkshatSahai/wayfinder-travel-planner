@@ -41,10 +41,30 @@ lands next.
   suggestions. Browse when you want it, and once you've gathered a few things, "Build out
   itinerary" will arrange them into days for you.
 
+#### New Features
+
+**Build out itinerary — AI schedules your activities into days**
+
+- _Technical:_ New `buildItinerary` server fn. Activities missing a location or coordinates are
+  resolved against Google Places first (new `lookupPlaceDetails`), so grouping has real geography
+  to work with, and the result is written back onto the activity's `details` — filling `location`
+  and `coords` only when absent, never overwriting traveler input. The enriched list then goes to
+  Gemini for sequencing, which returns a day, an order, an optional time, and a one-line reason per
+  activity. The model is not trusted with correctness: `day_index` is clamped to the trip's length,
+  duplicates are dropped, anything it omits is appended rather than lost, and every row on each
+  affected day is renumbered client-side — the planner only sees *staged* activities, so its
+  `sort_order` would otherwise collide with items already scheduled there, including the booked
+  stay. `updateTripItem` now accepts `details`, and a new `updateTripItems` applies the whole plan
+  in one request instead of N.
+- _For everyone:_ Once you've gathered activities, hit "Build out itinerary" and they're arranged
+  into a day-by-day plan — things near each other on the same day, meals and nightlife at sensible
+  times, and any date you asked for respected. If you added something without a location, we look
+  it up and save it so you don't have to. Each item shows a short note on why it landed where it
+  did, and you can still drag anything afterwards.
+
 #### Upcoming
 
-- AI itinerary building from your staged activities, then an itinerary chat that can edit the plan
-  directly, and a day-by-day map with routes.
+- An itinerary chat that can edit the plan directly, and a day-by-day map with routes.
 - Realtime sync for shared trips, change notifications, and an activity feed.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 

@@ -121,23 +121,25 @@ export const removeTripItem = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+const itemPatchSchema = z.object({
+  id: z.string().uuid(),
+  category: z.string().max(60).nullable().optional(),
+  day_index: z.number().int().nullable().optional(),
+  start_time: z.string().nullable().optional(),
+  end_time: z.string().nullable().optional(),
+  title: z.string().max(300).optional(),
+  subtitle: z.string().max(500).nullable().optional(),
+  // `details` is writable so enrichment (a looked-up address, coordinates, a
+  // duration estimate) can be persisted back onto the activity rather than
+  // being used once and thrown away.
+  details: z.any().optional(),
+  cost_cents: z.number().int().optional(),
+  sort_order: z.number().int().optional(),
+});
+
 export const updateTripItem = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z
-      .object({
-        id: z.string().uuid(),
-        category: z.string().max(60).nullable().optional(),
-        day_index: z.number().int().nullable().optional(),
-        start_time: z.string().nullable().optional(),
-        end_time: z.string().nullable().optional(),
-        title: z.string().max(300).optional(),
-        subtitle: z.string().max(500).nullable().optional(),
-        cost_cents: z.number().int().optional(),
-        sort_order: z.number().int().optional(),
-      })
-      .parse(d),
-  )
+  .inputValidator((d: unknown) => itemPatchSchema.parse(d))
   .handler(async ({ data, context }) => {
     const { id, ...patch } = data;
     const { data: row, error } = await context.supabase
@@ -148,4 +150,28 @@ export const updateTripItem = createServerFn({ method: "POST" })
       .single();
     if (error) throw new Error(error.message);
     return { item: row };
+  });
+
+/**
+ * Apply many item patches in one request. Building an itinerary re-days every
+ * staged activity at once, which as N separate round trips is both slow and
+ * partially-applicable if one fails midway. Patches still run as individual
+ * UPDATEs (they have differing columns) but share a single request and a single
+ * RLS-authenticated context.
+ */
+export const updateTripItems = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ patches: z.array(itemPatchSchema).max(200) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const results = await Promise.all(
+      data.patches.map(async ({ id, ...patch }) => {
+        const { error } = await context.supabase.from("trip_items").update(patch).eq("id", id);
+        return error ? { id, error: error.message } : { id, error: null };
+      }),
+    );
+    const failed = results.filter((r) => r.error);
+    if (failed.length === results.length && failed.length > 0) {
+      throw new Error(`No items could be updated: ${failed[0].error}`);
+    }
+    return { updated: results.length - failed.length, failed };
   });

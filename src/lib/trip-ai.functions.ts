@@ -437,6 +437,201 @@ export const searchTransport = createServerFn({ method: "POST" })
     };
   });
 
+// -------- Itinerary building (AI + Places enrichment) --------
+
+const scheduleSchema = z.object({
+  assignments: z.array(
+    z.object({
+      id: z.string(),
+      day_index: z.number().int(),
+      sort_order: z.number().int(),
+      start_time: z.string().nullable(),
+      reason: z.string(),
+    }),
+  ),
+  day_notes: z.array(z.object({ day_index: z.number().int(), note: z.string() })),
+});
+
+export interface ActivityEnrichment {
+  id: string;
+  address: string | null;
+  coords: { lat: number; lng: number } | null;
+  duration_hours: number | null;
+  looked_up: boolean;
+}
+
+/**
+ * Arrange staged activities into a day-by-day plan.
+ *
+ * Two phases: activities missing a location or coordinates are looked up
+ * against Google Places first (so grouping by proximity has something real to
+ * work with), then the enriched list goes to the model for sequencing. The
+ * enrichment is returned to the caller so it can be written back onto each
+ * activity — it is deliberately not discarded after scheduling.
+ *
+ * Failure of enrichment is never fatal: an activity that can't be resolved is
+ * still scheduled, just without coordinates.
+ */
+export const buildItinerary = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        destination: z.string(),
+        origin: z.string().nullable(),
+        start_date: z.string().nullable(),
+        end_date: z.string().nullable(),
+        num_days: z.number().int().min(1).max(60),
+        lodging: z.string().nullable(),
+        activities: z
+          .array(
+            z.object({
+              id: z.string(),
+              title: z.string(),
+              category: z.string().nullable(),
+              cost_cents: z.number().int(),
+              location: z.string().nullable(),
+              duration_hours: z.number().nullable(),
+              preferred_date: z.string().nullable(),
+              lat: z.number().nullable(),
+              lng: z.number().nullable(),
+            }),
+          )
+          .min(1)
+          .max(80),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    // ---- Phase 1: enrich what can't be scheduled well as-is ----
+    const needsLookup = data.activities.filter((a) => !a.location || a.lat == null);
+    const enrichments: ActivityEnrichment[] = [];
+    let enrichment_error: string | null = null;
+
+    if (needsLookup.length > 0) {
+      try {
+        const { lookupPlaceDetails } = await import("./providers/google-places.server");
+        const settled = await Promise.allSettled(
+          needsLookup.map((a) => lookupPlaceDetails(a.title, a.location ?? data.destination)),
+        );
+        settled.forEach((r, i) => {
+          const a = needsLookup[i];
+          if (r.status === "fulfilled" && r.value) {
+            enrichments.push({
+              id: a.id,
+              address: r.value.address,
+              coords:
+                r.value.lat != null && r.value.lng != null
+                  ? { lat: r.value.lat, lng: r.value.lng }
+                  : null,
+              duration_hours: a.duration_hours,
+              looked_up: true,
+            });
+          }
+        });
+      } catch (err) {
+        // A missing key or a Places outage degrades to scheduling without
+        // coordinates rather than failing the whole build.
+        console.error("[build-itinerary] enrichment unavailable:", err);
+        enrichment_error = missingKeyFrom(err)
+          ? `${missingKeyFrom(err)} missing — scheduled without location lookup.`
+          : "Location lookup unavailable — scheduled without it.";
+      }
+    }
+
+    const byId = new Map(enrichments.map((e) => [e.id, e]));
+    const enriched = data.activities.map((a) => {
+      const e = byId.get(a.id);
+      return {
+        ...a,
+        location: a.location ?? e?.address ?? null,
+        lat: a.lat ?? e?.coords?.lat ?? null,
+        lng: a.lng ?? e?.coords?.lng ?? null,
+      };
+    });
+
+    // ---- Phase 2: sequence ----
+    const lines = enriched
+      .map(
+        (a) =>
+          `- id=${a.id} | "${a.title}" | ${a.category ?? "Activity"} | $${(a.cost_cents / 100).toFixed(0)}` +
+          ` | ${a.location ?? "location unknown"}` +
+          (a.lat != null ? ` | coords ${a.lat.toFixed(4)},${a.lng?.toFixed(4)}` : "") +
+          (a.duration_hours ? ` | ~${a.duration_hours}h` : "") +
+          (a.preferred_date ? ` | traveler asked for ${a.preferred_date}` : ""),
+      )
+      .join("\n");
+
+    const result = await generateStructured(
+      `Arrange these activities into a ${data.num_days}-day itinerary for a trip to ${data.destination}.
+
+Rules:
+- Assign EVERY activity to a day. day_index is 0-based (0 = first day) and must be between 0 and ${data.num_days - 1}. Never drop an activity.
+- Group activities that are geographically close on the SAME day — minimize driving between stops within a day. Use the coordinates where given.
+- Order within a day with sort_order (0-based) so the sequence makes practical sense: meals at meal times, outdoor/nature earlier, nightlife last.
+- Respect any "traveler asked for <date>" preference: map that date to its day_index and keep it there.
+- Pace realistically: roughly 2-4 activities per day, and don't stack a day past ~10 hours of activity time.
+- Spread cost across days where you can rather than putting every expensive item on one day.
+- start_time is "HH:MM" 24-hour local, or null if a specific time doesn't matter.
+- "reason" is a SHORT phrase (max 12 words) explaining the placement, e.g. "near the lakefront cluster" or "sunset views".
+- day_notes: one short note per day summarising the day's shape. Only for days that have activities.
+
+Trip context:
+- Dates: ${data.start_date ?? "?"} to ${data.end_date ?? "?"} (${data.num_days} days)
+- Travelling from: ${data.origin ?? "unspecified"}
+- Base/lodging: ${data.lodging ?? "not booked yet"}
+
+Activities:
+${lines}`,
+      scheduleSchema,
+      "You are an expert travel planner building a realistic day-by-day schedule. Think about geography and travel time between stops. Return JSON only.",
+    );
+
+    if (!result) {
+      return {
+        assignments: [],
+        day_notes: [],
+        enrichments,
+        enrichment_error,
+        error: "The AI couldn't build a schedule. Try again in a moment.",
+      };
+    }
+
+    // Never trust the model with the day range or with completeness: clamp days
+    // and append anything it dropped, so no staged activity silently vanishes.
+    const valid = new Set(data.activities.map((a) => a.id));
+    const seen = new Set<string>();
+    const assignments: typeof result.assignments = [];
+    for (const a of result.assignments) {
+      if (!valid.has(a.id) || seen.has(a.id)) continue;
+      seen.add(a.id);
+      assignments.push({
+        ...a,
+        day_index: Math.min(Math.max(a.day_index, 0), data.num_days - 1),
+        sort_order: Math.max(0, a.sort_order),
+      });
+    }
+
+    const missing = data.activities.filter((a) => !seen.has(a.id));
+    missing.forEach((a, i) => {
+      assignments.push({
+        id: a.id,
+        day_index: Math.min(i % data.num_days, data.num_days - 1),
+        sort_order: 900 + i,
+        start_time: null,
+        reason: "added automatically — the planner left it out",
+      });
+    });
+
+    return {
+      assignments,
+      day_notes: result.day_notes.filter((n) => n.day_index >= 0 && n.day_index < data.num_days),
+      enrichments,
+      enrichment_error,
+      error: null as string | null,
+      dropped_by_ai: missing.length,
+    };
+  });
+
 // -------- Activities (Google Places) --------
 export const searchActivities = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>

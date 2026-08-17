@@ -139,6 +139,63 @@ function mapPlace(p: Place, category: ActivityCategory, apiKey: string) {
     review_count: p.userRatingCount ?? null,
     photo_url,
     source_url: p.googleMapsUri ?? null,
+    // The field mask already asks for places.location — these were being
+    // discarded. Itinerary building groups by proximity and the day map plots
+    // them, so they have to survive.
+    address: p.formattedAddress ?? null,
+    lat: p.location?.latitude ?? null,
+    lng: p.location?.longitude ?? null,
+  };
+}
+
+export interface PlaceLookup {
+  name: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  rating: number | null;
+  est_cost_cents: number | null;
+  maps_url: string | null;
+}
+
+/**
+ * Resolve one named activity to a real place, for scheduling enrichment.
+ * Used when a staged activity has no location or coordinates of its own —
+ * without them it can't be grouped by proximity or plotted.
+ * Returns null rather than throwing when nothing matches, so one unresolvable
+ * activity never fails a whole itinerary build.
+ */
+export async function lookupPlaceDetails(
+  query: string,
+  near: string | null,
+): Promise<PlaceLookup | null> {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("GOOGLE_API_KEY missing");
+  const textQuery = near ? `${query} in ${near}` : query;
+  const res = await withTimeout(
+    fetch(PLACES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask":
+          "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.priceLevel,places.googleMapsUri",
+      },
+      body: JSON.stringify({ textQuery, maxResultCount: 1 }),
+    }),
+  );
+  if (!res.ok) throw new Error(`places lookup failed: ${res.status}`);
+  const json = (await res.json()) as { places?: Place[] };
+  const p = json.places?.[0];
+  if (!p) return null;
+  return {
+    name: p.displayName?.text ?? query,
+    address: p.formattedAddress ?? null,
+    lat: p.location?.latitude ?? null,
+    lng: p.location?.longitude ?? null,
+    rating: p.rating ?? null,
+    est_cost_cents: p.priceLevel ? (PRICE_LEVEL_CENTS[p.priceLevel] ?? null) : null,
+    maps_url: p.googleMapsUri ?? null,
   };
 }
 
