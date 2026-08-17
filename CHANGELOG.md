@@ -1,14 +1,26 @@
 # Wayfinder Changelog
 
-## v0.5.0 — 2026-08-16
+## v0.5.0 — 2026-08-17
 
 ### Overview
 
-Activities stop scheduling themselves. Anything you add on the Activities tab now collects in a
-staging list on that tab instead of silently landing on Day 1 of your itinerary, so you can gather
-options without committing to when you'll do them. Browsing moved behind a button, giving the tab
-over to your own list, and a "Build out itinerary" action is in place for the AI scheduling that
-lands next.
+The biggest release so far, in two halves.
+
+**Planning.** Activities stop scheduling themselves — anything you add now collects in a list on the
+Activities tab instead of silently landing on Day 1. Once you've gathered a few, "Build out
+itinerary" arranges them into days: things near each other grouped together, meals and nightlife at
+sensible times, and any date you asked for respected. From there you can just talk to it — "move the
+aquarium to day 3", "swap days 2 and 3" — and it changes the plan rather than suggesting. The
+Itinerary tab was rebuilt around day tabs with a map of the selected day, its route, and how much
+driving it involves. Drag something somewhere questionable and you'll occasionally get a short note
+explaining why.
+
+**Collaboration.** Shared trips now update live. Open one alongside a collaborator and their changes
+appear as they make them, with a brief message saying who did what — and never about your own edits.
+An Activity button shows recent changes if you missed them.
+
+Also fixed: our Google API key had been embedded in every activity photo URL sent to browsers since
+v0.1. It now stays on the server.
 
 ### Updates
 
@@ -27,6 +39,29 @@ lands next.
 - _For everyone:_ Adding an activity used to put it on the first day of your trip whether or not
   that made any sense, and you'd have to drag it somewhere better. Now it goes into a list on the
   Activities tab and your itinerary stays exactly as you left it.
+
+**Our Google API key was exposed in every Places photo URL**
+
+- _Technical:_ Photo URLs were built server-side as
+  `places.googleapis.com/v1/{name}/media?...&key={GOOGLE_API_KEY}` and returned to the client as an
+  `<img src>`, publishing the key to anyone who opened devtools — present since v0.1. Photos now go
+  through `/api/places/photo`, handled in `src/server.ts`, which calls Places with the key
+  server-side and streams the bytes back under a 24h immutable cache. The `name` parameter is
+  validated against the exact shape Places issues and anything else is rejected 400 — without that
+  the route would be an open relay for calls authenticated with our key. Only the producer changed;
+  every consumer already just rendered `photo_url`. IP-restricting the key remains unavailable
+  (Vercel egress IPs are dynamic without Secure Compute, so a restriction would break production),
+  so the API restriction and quota caps remain the controls.
+- _For everyone:_ Nothing looks different — photos load exactly as before. Behind the scenes our
+  Google key is no longer handed to every visitor's browser.
+
+**The pre-commit lint gate was failing on `main`**
+
+- _Technical:_ `npx eslint src/` returned 188 `prettier/prettier` errors, all in
+  `activities-panel.tsx` from a v0.4.0 commit that skipped `prettier --write`. Separately, a fresh
+  clone on Windows produced ~12,400 phantom `Delete ␍` errors because Git defaults
+  `core.autocrlf=true` and the repo had no `.gitattributes`. Both fixed; LF is now pinned.
+- _For everyone:_ No user-facing change — internal tooling that had quietly stopped working.
 
 #### Changes
 
@@ -98,23 +133,6 @@ lands next.
 - _For everyone:_ Move something to a different day and, occasionally, a short note appears
   explaining why it might not work — a day that's become impossible to fit, a long detour, a
   timing clash. It stays quiet the rest of the time, and you can dismiss any note.
-
-#### Bug Fixes
-
-**Our Google API key was exposed in every Places photo URL**
-
-- _Technical:_ Photo URLs were built server-side as
-  `places.googleapis.com/v1/{name}/media?...&key={GOOGLE_API_KEY}` and returned to the client as an
-  `<img src>`, publishing the key to anyone who opened devtools — present since v0.1. Photos now go
-  through `/api/places/photo`, handled in `src/server.ts`, which calls Places with the key
-  server-side and streams the bytes back under a 24h immutable cache. The `name` parameter is
-  validated against the exact shape Places issues and anything else is rejected 400 — without that
-  the route would be an open relay for calls authenticated with our key. Only the producer changed;
-  every consumer already just rendered `photo_url`. IP-restricting the key remains unavailable
-  (Vercel egress IPs are dynamic without Secure Compute, so a restriction would break production),
-  so the API restriction and quota caps remain the controls.
-- _For everyone:_ Nothing looks different — photos load exactly as before. Behind the scenes our
-  Google key is no longer handed to every visitor's browser.
 
 **Itinerary tab redesign — day tabs and a route map**
 
