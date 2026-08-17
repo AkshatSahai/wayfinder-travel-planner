@@ -540,8 +540,9 @@ not a code change to the existing trip/item server fns.
 
 Not yet verified end-to-end in a live browser — see §6/§7 and `FEATURE_TRACKING.md` for what
 still needs a real multi-day trip run-through. Migration `20260817010000_day_start_times.sql`
-(adds `trips.day_start_times`) needs to be applied to the live Supabase project before this is
-usable in production; it has not been applied yet as of this entry.
+(adds `trips.day_start_times`) applied to the live Supabase project on 2026-08-17 and confirmed
+with `select day_start_times from trips limit 1;` (returned `null`, as expected — no trip has set
+one yet). The column itself is real; the app code that reads/writes it is still unverified live.
 
 1. **Timezone root-cause fix** for the "9 AM doesn't match display order" bug — see §3, "Timing
    is manual now, not AI-assigned."
