@@ -632,6 +632,205 @@ ${lines}`,
     };
   });
 
+// -------- Itinerary chat (AI edits the plan directly) --------
+
+const MAX_OPS_PER_TURN = 20;
+
+const itineraryOpSchema = z.object({
+  op: z.enum(["move", "remove", "add", "swap_days", "retime"]),
+  // move / remove / retime
+  id: z.string().nullable(),
+  // move
+  day_index: z.number().int().nullable(),
+  sort_order: z.number().int().nullable(),
+  // add
+  title: z.string().nullable(),
+  category: z.string().nullable(),
+  cost_cents: z.number().int().nullable(),
+  location: z.string().nullable(),
+  // swap_days
+  day_a: z.number().int().nullable(),
+  day_b: z.number().int().nullable(),
+  // retime
+  start_time: z.string().nullable(),
+});
+
+const chatItinerarySchema = z.object({
+  reply: z.string(),
+  operations: z.array(itineraryOpSchema),
+});
+
+export type ItineraryOp = z.infer<typeof itineraryOpSchema>;
+
+/**
+ * Conversational itinerary editing. Returns *operations* rather than prose the
+ * caller has to interpret, so the plan is changed deterministically and the
+ * confirmation shown to the traveler describes what actually happened.
+ *
+ * As with buildItinerary, the model is not trusted: operations naming an
+ * unknown row are dropped, day indices are clamped to the trip's length, and
+ * the number of operations per turn is capped so a single message can't rewrite
+ * the whole trip.
+ */
+export const chatItinerary = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        messages: z
+          .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(2000) }))
+          .max(20),
+        destination: z.string(),
+        start_date: z.string().nullable(),
+        num_days: z.number().int().min(1).max(60),
+        items: z
+          .array(
+            z.object({
+              id: z.string(),
+              kind: z.string(),
+              title: z.string(),
+              day_index: z.number().int().nullable(),
+              sort_order: z.number().int(),
+              cost_cents: z.number().int(),
+              location: z.string().nullable(),
+              start_time: z.string().nullable(),
+            }),
+          )
+          .max(200),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const transcript = data.messages
+      .map((m) => `${m.role === "user" ? "Traveler" : "You"}: ${m.content}`)
+      .join("\n");
+
+    const plan = data.items
+      .map(
+        (i) =>
+          `- id=${i.id} | ${i.day_index == null ? "UNSCHEDULED" : `day ${i.day_index}`}` +
+          ` #${i.sort_order} | ${i.kind} | "${i.title}"` +
+          (i.location ? ` | ${i.location}` : "") +
+          (i.start_time ? ` | ${i.start_time}` : "") +
+          ` | $${(i.cost_cents / 100).toFixed(0)}`,
+      )
+      .join("\n");
+
+    const result = await generateStructured(
+      `You are editing a traveler's itinerary for ${data.destination} through conversation.
+
+Respond to their latest message with a short "reply" (1-2 sentences, plain English, past tense —
+describe what you changed) and the "operations" that carry it out.
+
+Operation types — set unused fields to null:
+- move:      id, day_index (0-based), sort_order (0-based position within that day)
+- remove:    id
+- add:       title, category, cost_cents, location, day_index (null = add without scheduling it)
+- swap_days: day_a, day_b (exchanges everything between the two days)
+- retime:    id, start_time as "HH:MM" 24-hour, or null to clear
+
+Rules:
+- Days are 0-based internally but the traveler counts from 1. "day 2" means day_index 1.
+- Resolve names the traveler uses ("the candy factory", "the museum") to the matching id from the
+  plan below. Match on meaning, not position.
+- If you cannot confidently identify what they mean, return NO operations and ask which one they
+  meant in the reply. Never guess at a removal.
+- Only include operations that are actually needed. An unchanged item needs no operation.
+- day_index must be between 0 and ${data.num_days - 1}.
+- category for an added activity should be one of: Food, Nature, Activity, Relaxation, Nightlife,
+  Spa, Culture.
+- cost_cents is per the whole party, in cents. Use 0 if unknown or free.
+
+Trip: ${data.num_days} days${data.start_date ? `, starting ${data.start_date}` : ""}.
+
+Current plan:
+${plan || "(nothing scheduled yet)"}
+
+Conversation:
+${transcript}`,
+      chatItinerarySchema,
+      "You are a precise itinerary editor. Return JSON only. Prefer doing nothing over doing the wrong thing.",
+    );
+
+    if (!result) {
+      return {
+        reply: "Sorry — I couldn't process that. Try rephrasing?",
+        operations: [] as ItineraryOp[],
+        enrichments: [] as {
+          title: string;
+          location: string | null;
+          coords: { lat: number; lng: number } | null;
+        }[],
+        dropped: 0,
+      };
+    }
+
+    const known = new Map(data.items.map((i) => [i.id, i]));
+    const clampDay = (d: number | null) =>
+      d == null ? null : Math.min(Math.max(d, 0), data.num_days - 1);
+
+    const operations: ItineraryOp[] = [];
+    let dropped = 0;
+    for (const raw of result.operations) {
+      if (operations.length >= MAX_OPS_PER_TURN) {
+        dropped++;
+        continue;
+      }
+      // Anything naming a row we don't have is a hallucinated target.
+      if (["move", "remove", "retime"].includes(raw.op) && (!raw.id || !known.has(raw.id))) {
+        dropped++;
+        continue;
+      }
+      if (raw.op === "add" && !raw.title?.trim()) {
+        dropped++;
+        continue;
+      }
+      if (raw.op === "swap_days") {
+        const a = clampDay(raw.day_a);
+        const b = clampDay(raw.day_b);
+        if (a == null || b == null || a === b) {
+          dropped++;
+          continue;
+        }
+        operations.push({ ...raw, day_a: a, day_b: b });
+        continue;
+      }
+      operations.push({ ...raw, day_index: clampDay(raw.day_index) });
+    }
+
+    // Give added activities a real location the same way buildItinerary does,
+    // so a chat-added stop is as plottable as any other.
+    const adds = operations.filter((o) => o.op === "add");
+    const enrichments: {
+      title: string;
+      location: string | null;
+      coords: { lat: number; lng: number } | null;
+    }[] = [];
+    if (adds.length > 0) {
+      try {
+        const { lookupPlaceDetails } = await import("./providers/google-places.server");
+        const settled = await Promise.allSettled(
+          adds.map((a) => lookupPlaceDetails(a.title!, a.location ?? data.destination)),
+        );
+        settled.forEach((r, i) => {
+          if (r.status === "fulfilled" && r.value) {
+            enrichments.push({
+              title: adds[i].title!,
+              location: r.value.address,
+              coords:
+                r.value.lat != null && r.value.lng != null
+                  ? { lat: r.value.lat, lng: r.value.lng }
+                  : null,
+            });
+          }
+        });
+      } catch (err) {
+        console.error("[chat-itinerary] enrichment unavailable:", err);
+      }
+    }
+
+    return { reply: result.reply, operations, enrichments, dropped };
+  });
+
 // -------- Activities (Google Places) --------
 export const searchActivities = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>

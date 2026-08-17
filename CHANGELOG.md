@@ -62,9 +62,31 @@ lands next.
   it up and save it so you don't have to. Each item shows a short note on why it landed where it
   did, and you can still drag anything afterwards.
 
+**Itinerary chat — tell it what to change**
+
+- _Technical:_ New `chatItinerary` server fn returning **operations** (`move`, `remove`, `add`,
+  `swap_days`, `retime`) rather than prose, so edits apply deterministically. Same guardrails as
+  the planner: operations naming an unknown row are dropped, days are clamped, and operations per
+  turn are capped. `swap_days` moves every kind on both days, not just activities, so a booked
+  stay isn't stranded. Added activities go through the same Places enrichment as build-out. Every
+  path that places rows on a day now shares `renumberDay()` — both AI paths compute positions
+  without seeing what's already on the day, which collides otherwise. Each batch snapshots the
+  rows it touches, so the confirmation toast can offer Undo.
+- _For everyone:_ The Itinerary tab has a chat box. Say "move the aquarium to day 3", "remove the
+  candy shop", "swap days 2 and 3", or "add dinner at Lou Malnati's on day 2", and the plan
+  changes — it doesn't just suggest. If it picks the wrong thing, hit Undo on the confirmation.
+  Anything it adds shows up on your Activities tab too.
+
+**Activities tab now shows everything**
+
+- _Technical:_ The tab lists all activities rather than only unscheduled ones, with a day badge on
+  scheduled rows; "Build out itinerary" keys off the unscheduled count.
+- _For everyone:_ Your activity list no longer empties once you build the itinerary — it shows
+  what's scheduled and what still needs a day, in one place.
+
 #### Upcoming
 
-- An itinerary chat that can edit the plan directly, and a day-by-day map with routes.
+- A day-by-day itinerary map with routes, and an AI second opinion when you drag things around.
 - Realtime sync for shared trips, change notifications, and an activity feed.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 

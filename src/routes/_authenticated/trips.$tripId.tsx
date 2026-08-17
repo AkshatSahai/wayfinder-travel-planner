@@ -1,7 +1,7 @@
 import { createFileRoute, getRouteApi, Link, notFound } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
 import { ChevronLeft, Share2 } from "lucide-react";
@@ -15,16 +15,20 @@ import {
   updateTripItem,
   updateTripItems,
 } from "@/lib/trips.functions";
-import { buildItinerary } from "@/lib/trip-ai.functions";
+import { buildItinerary, chatItinerary, type ItineraryOp } from "@/lib/trip-ai.functions";
 import {
   daysBetween,
   isBookedLodging,
   isLodgingCandidate,
   isStagedActivity,
+  minutesFromClock,
+  minutesFromTimestamp,
+  renumberDay,
   stagedActivities,
   LODGING_BOOKED,
   LODGING_CANDIDATE,
   type LatLng,
+  type OrderableRow,
 } from "@/lib/workspace-store";
 import { AppSidebar, type WorkspaceTab } from "@/components/shell/app-sidebar";
 import { TripMetaBar } from "@/components/shell/trip-meta-bar";
@@ -39,6 +43,47 @@ import { ShareTripDialog } from "@/components/travel/share-trip-dialog";
 import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
 
 const authRoute = getRouteApi("/_authenticated");
+
+export type ChatMessage = { role: "user" | "assistant"; content: string };
+
+type ChatEnrichment = {
+  title: string;
+  location: string | null;
+  coords: { lat: number; lng: number } | null;
+};
+
+type ChatPatch = {
+  id: string;
+  day_index?: number;
+  sort_order?: number;
+  start_time?: string | null;
+};
+
+/**
+ * Everything needed to put the itinerary back exactly as it was before a chat
+ * edit: prior positions of every row touched, ids of anything created, and full
+ * copies of anything deleted.
+ */
+type UndoSnapshot = {
+  positions: {
+    id: string;
+    day_index: number | null;
+    sort_order: number;
+    start_time: string | null;
+  }[];
+  added: string[];
+  removed: {
+    kind: "lodging" | "transport" | "activity" | "block";
+    category: string | null;
+    day_index: number | null;
+    title: string;
+    subtitle: string | null;
+    details: Record<string, unknown>;
+    cost_cents: number;
+    source_url: string | null;
+    sort_order: number;
+  }[];
+};
 
 const TABS = ["details", "lodging", "transport", "activities", "itinerary"] as const;
 
@@ -63,6 +108,7 @@ function WorkspacePage() {
   const setTab = (t: WorkspaceTab) => navigate({ search: { tab: t }, replace: true });
   const { user } = authRoute.useRouteContext();
   const [shareOpen, setShareOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const qc = useQueryClient();
   const getFn = useServerFn(getTrip);
@@ -72,6 +118,7 @@ function WorkspacePage() {
   const updateItemFn = useServerFn(updateTripItem);
   const updateItemsFn = useServerFn(updateTripItems);
   const buildFn = useServerFn(buildItinerary);
+  const chatFn = useServerFn(chatItinerary);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["trip", tripId],
@@ -198,37 +245,18 @@ function WorkspacePage() {
       const assignedIds = new Set(res.assignments.map((a) => a.id));
       const affectedDays = new Set(res.assignments.map((a) => a.day_index));
 
-      // Minutes-since-midnight, used only to order a day sensibly.
-      const minutesOf = (hhmm: string | null): number | null => {
-        if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
-        const [h, m] = hhmm.split(":").map(Number);
-        return h * 60 + m;
-      };
-      const minutesOfStamp = (ts: string | null): number | null => {
-        if (!ts) return null;
-        const d = new Date(ts);
-        return Number.isNaN(d.getTime()) ? null : d.getHours() * 60 + d.getMinutes();
-      };
-
       // The planner only sees staged activities, so it numbers sort_order from 0
       // and would collide with whatever is already on that day (including the
-      // booked stay). Renumber each affected day across ALL its rows, ordered by
-      // time where known, so positions stay unique and the day reads correctly.
-      type Row = {
-        id: string;
-        day_index: number;
-        minutes: number | null;
-        prior: number;
-        isNew: boolean;
-      };
-      const rowsByDay = new Map<number, Row[]>();
+      // booked stay). Renumbering each touched day is shared with the chat
+      // editor — see renumberDay in workspace-store.
+      const rowsByDay = new Map<number, (OrderableRow & { isNew: boolean; day: number })[]>();
       for (const day of affectedDays) rowsByDay.set(day, []);
 
       for (const a of res.assignments) {
         rowsByDay.get(a.day_index)!.push({
           id: a.id,
-          day_index: a.day_index,
-          minutes: minutesOf(a.start_time),
+          day: a.day_index,
+          minutes: minutesFromClock(a.start_time),
           prior: a.sort_order,
           isNew: true,
         });
@@ -239,8 +267,8 @@ function WorkspacePage() {
         if (item.day_index == null || !affectedDays.has(item.day_index)) continue;
         rowsByDay.get(item.day_index)!.push({
           id: item.id,
-          day_index: item.day_index,
-          minutes: minutesOfStamp(item.start_time),
+          day: item.day_index,
+          minutes: minutesFromTimestamp(item.start_time),
           prior: item.sort_order ?? 0,
           isNew: false,
         });
@@ -248,14 +276,7 @@ function WorkspacePage() {
 
       const finalOrder = new Map<string, number>();
       for (const [, rows] of rowsByDay) {
-        rows
-          .sort((x, y) => {
-            // Timed rows lead, in time order; untimed keep their prior order.
-            const mx = x.minutes ?? Number.MAX_SAFE_INTEGER;
-            const my = y.minutes ?? Number.MAX_SAFE_INTEGER;
-            return mx - my || x.prior - y.prior;
-          })
-          .forEach((r, i) => finalOrder.set(r.id, i));
+        for (const [id, pos] of renumberDay(rows)) finalOrder.set(id, pos);
       }
 
       type ItemPatch = {
@@ -310,6 +331,218 @@ function WorkspacePage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  // Itinerary chat: the model returns operations, which are applied here so the
+  // plan changes deterministically. Every batch snapshots the rows it touches so
+  // it can be undone — fuzzy name matching can resolve to the wrong row, and a
+  // removal is otherwise unrecoverable.
+  const applyOps = async (ops: ItineraryOp[], enrichments: ChatEnrichment[]) => {
+    const trip = data!.trip;
+    const numDays = Math.max(1, daysBetween(trip.start_date, trip.end_date) || 1);
+    const live = data!.items.filter((i) => !isLodgingCandidate(i));
+    const byId = new Map(live.map((i) => [i.id, i]));
+
+    const undo: UndoSnapshot = { positions: [], added: [], removed: [] };
+    const nextDay = new Map<string, number | null>();
+    const nextTime = new Map<string, string | null>();
+    const removedIds = new Set<string>();
+
+    for (const op of ops) {
+      if (op.op === "remove" && op.id && byId.has(op.id)) {
+        removedIds.add(op.id);
+      } else if (op.op === "move" && op.id && byId.has(op.id) && op.day_index != null) {
+        nextDay.set(op.id, op.day_index);
+      } else if (op.op === "retime" && op.id && byId.has(op.id)) {
+        nextTime.set(op.id, op.start_time);
+      } else if (op.op === "swap_days" && op.day_a != null && op.day_b != null) {
+        // Everything on those days moves, not just activities — otherwise the
+        // booked stay is left behind on the wrong day.
+        for (const item of live) {
+          if (item.day_index === op.day_a) nextDay.set(item.id, op.day_b);
+          else if (item.day_index === op.day_b) nextDay.set(item.id, op.day_a);
+        }
+      }
+    }
+
+    // Snapshot before anything changes.
+    for (const id of new Set([...nextDay.keys(), ...removedIds, ...nextTime.keys()])) {
+      const item = byId.get(id);
+      if (item) {
+        undo.positions.push({
+          id,
+          day_index: item.day_index,
+          sort_order: item.sort_order ?? 0,
+          start_time: item.start_time,
+        });
+      }
+    }
+
+    for (const id of removedIds) {
+      const item = byId.get(id)!;
+      undo.removed.push({
+        kind: item.kind as NewItem["kind"],
+        category: item.category,
+        day_index: item.day_index,
+        title: item.title,
+        subtitle: item.subtitle,
+        details: (item.details ?? {}) as Record<string, unknown>,
+        cost_cents: item.cost_cents ?? 0,
+        source_url: item.source_url,
+        sort_order: item.sort_order ?? 0,
+      });
+      await removeFn({ data: { id } });
+    }
+
+    const createdRows: { id: string; day: number }[] = [];
+    const enrichByTitle = new Map(enrichments.map((e) => [e.title.toLowerCase(), e]));
+    for (const op of ops) {
+      if (op.op !== "add" || !op.title) continue;
+      const e = enrichByTitle.get(op.title.toLowerCase());
+      const created = await addFn({
+        data: {
+          trip_id: tripId,
+          kind: "activity",
+          category: op.category ?? "Activity",
+          day_index: op.day_index,
+          title: op.title,
+          cost_cents: op.cost_cents ?? 0,
+          sort_order: 500,
+          details: {
+            ...(op.location || e?.location ? { location: e?.location ?? op.location } : {}),
+            ...(e?.coords ? { coords: e.coords } : {}),
+            planner_reason: "added from chat",
+          },
+        },
+      });
+      if (created?.item?.id) {
+        undo.added.push(created.item.id);
+        if (op.day_index != null) {
+          nextDay.set(created.item.id, op.day_index);
+          // Newly created rows aren't in `live`, so they must be fed into the
+          // renumbering explicitly or they keep a placeholder position and
+          // collide with whatever already sits at that spot.
+          createdRows.push({ id: created.item.id, day: op.day_index });
+        }
+      }
+    }
+
+    // Rebuild each touched day so positions stay unique across every kind.
+    const survivors = live.filter((i) => !removedIds.has(i.id));
+    const dayOf = (i: (typeof survivors)[number]) =>
+      nextDay.has(i.id) ? nextDay.get(i.id)! : i.day_index;
+    const touched = new Set<number>();
+    for (const [, d] of nextDay) if (d != null) touched.add(d);
+    for (const s of undo.positions) if (s.day_index != null) touched.add(s.day_index);
+    for (const c of createdRows) touched.add(c.day);
+
+    const patches: ChatPatch[] = [];
+    for (const day of touched) {
+      if (day < 0 || day >= numDays) continue;
+      const rows: OrderableRow[] = survivors
+        .filter((i) => dayOf(i) === day && !isStagedActivity({ ...i, day_index: dayOf(i) }))
+        .map((i) => ({
+          id: i.id,
+          minutes: nextTime.has(i.id)
+            ? minutesFromClock(nextTime.get(i.id) ?? null)
+            : minutesFromTimestamp(i.start_time),
+          prior: i.sort_order ?? 0,
+        }));
+      // Freshly created rows have no prior position; park them at the end of
+      // the day and let renumberDay give them a real one.
+      for (const c of createdRows) {
+        if (c.day === day) rows.push({ id: c.id, minutes: null, prior: Number.MAX_SAFE_INTEGER });
+      }
+      for (const [id, pos] of renumberDay(rows)) {
+        patches.push({ id, day_index: day, sort_order: pos });
+      }
+    }
+    // Rows whose day changed but whose new day had no other members.
+    for (const [id, day] of nextDay) {
+      if (patches.some((p) => p.id === id)) continue;
+      patches.push({ id, day_index: day ?? undefined, sort_order: 0 });
+    }
+
+    if (patches.length > 0) await updateItemsFn({ data: { patches } });
+    return undo;
+  };
+
+  const undoRef = useRef<UndoSnapshot | null>(null);
+
+  const chatMut = useMutation({
+    mutationFn: async (allMessages: ChatMessage[]) => {
+      const trip = data!.trip;
+      const numDays = Math.max(1, daysBetween(trip.start_date, trip.end_date) || 1);
+      const res = await chatFn({
+        data: {
+          messages: allMessages,
+          destination: trip.destination ?? "",
+          start_date: trip.start_date,
+          num_days: numDays,
+          items: data!.items
+            .filter((i) => !isLodgingCandidate(i))
+            .map((i) => {
+              const d = (i.details ?? {}) as Record<string, unknown>;
+              return {
+                id: i.id,
+                kind: i.kind,
+                title: i.title,
+                day_index: i.day_index,
+                sort_order: i.sort_order ?? 0,
+                cost_cents: i.cost_cents ?? 0,
+                location: (d.location as string) ?? null,
+                start_time: i.start_time,
+              };
+            }),
+        },
+      });
+      const undo =
+        res.operations.length > 0 ? await applyOps(res.operations, res.enrichments) : null;
+      return { ...res, undo };
+    },
+    onSuccess: (res) => {
+      invalidate();
+      setChatMessages((m) => [...m, { role: "assistant", content: res.reply }]);
+      if (res.undo) {
+        undoRef.current = res.undo;
+        const n = res.operations.length;
+        toast.success(`Updated your itinerary (${n} change${n === 1 ? "" : "s"})`, {
+          action: { label: "Undo", onClick: () => undoMut.mutate() },
+          duration: 8000,
+        });
+      }
+    },
+    onError: (err: Error) => {
+      setChatMessages((m) => [...m, { role: "assistant", content: err.message }]);
+      toast.error(err.message);
+    },
+  });
+
+  const undoMut = useMutation({
+    mutationFn: async () => {
+      const snap = undoRef.current;
+      if (!snap) return;
+      for (const id of snap.added) await removeFn({ data: { id } });
+      for (const r of snap.removed) await addFn({ data: { ...r, trip_id: tripId } });
+      if (snap.positions.length > 0) {
+        await updateItemsFn({
+          data: {
+            patches: snap.positions.map((p) => ({
+              id: p.id,
+              day_index: p.day_index,
+              sort_order: p.sort_order,
+              start_time: p.start_time,
+            })),
+          },
+        });
+      }
+      undoRef.current = null;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast.success("Reverted");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   const reorderMut = useMutation({
     mutationFn: (moves: ItemMove[]) =>
       Promise.all(
@@ -340,6 +573,10 @@ function WorkspacePage() {
   const waypoints = parsed.waypoints ?? [];
   const isManualTrip = parsed.entry_mode === "manual";
   const stays = items.filter((i) => i.kind === "lodging");
+  // The Activities tab is the master list — scheduled rows included, labelled
+  // with their day — so anything the itinerary chat adds is visible on both
+  // tabs. `stagedActivities` still drives what "Build out itinerary" acts on.
+  const allActivities = items.filter((i) => i.kind === "activity");
   const staged = stagedActivities(items);
 
   const parsedTrip: ParsedTrip = {
@@ -449,7 +686,8 @@ function WorkspacePage() {
               startDate={trip.start_date}
               endDate={trip.end_date}
               partySize={trip.party_size ?? 2}
-              staged={staged}
+              activities={allActivities}
+              unscheduledCount={staged.length}
               autoBrowse={!isManualTrip}
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
@@ -463,6 +701,15 @@ function WorkspacePage() {
               items={items}
               numDays={numDays}
               startDate={trip.start_date}
+              chat={{
+                messages: chatMessages,
+                pending: chatMut.isPending,
+                onSend: (text) => {
+                  const next: ChatMessage[] = [...chatMessages, { role: "user", content: text }];
+                  setChatMessages(next);
+                  chatMut.mutate(next);
+                },
+              }}
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
               onReorder={(moves) => reorderMut.mutate(moves)}

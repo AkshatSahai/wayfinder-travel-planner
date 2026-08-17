@@ -154,6 +154,43 @@ requirement; the spec only required that the *itinerary* not change. Flipping it
 regardless of scheduling state. Routing it through `committedItems()` made staging ten activities
 still show the task as outstanding.
 
+### The Activities tab is the master list (v0.5.0 A3)
+
+It shows **every** activity — unscheduled rows read "Any day", scheduled ones carry a "Day N"
+badge. It deliberately no longer empties after "Build out itinerary".
+
+**Why:** the itinerary chat can add an activity straight onto a day. Under A1's staged-only tab
+that activity would exist on the itinerary and be invisible on Activities, which is exactly the
+desync A3 was meant to prevent. `stagedActivities()` still exists and still drives what
+"Build out itinerary" acts on — the button's disabled state keys off the *unscheduled* count,
+not the list length.
+
+### Itinerary chat rewrites positions, and that is not optional
+
+`chatItinerary` returns **operations** (`move` / `remove` / `add` / `swap_days` / `retime`), never
+prose the client has to interpret. Guardrails match `buildItinerary`: operations naming an unknown
+id are dropped, `day_index` is clamped, and ops per turn are capped (20) so one message can't
+rewrite the trip.
+
+Three things that are easy to get wrong here, all found by testing:
+
+- **`swap_days` must move every kind**, not just activities. Lodging and transport sit on days
+  too; swapping only activities strands the booked stay on the wrong day.
+- **Newly added rows must be fed into the day renumbering explicitly.** They're created *after*
+  the items snapshot is taken, so they aren't in it — a chat-added activity otherwise keeps its
+  placeholder `sort_order` and collides with whatever already sits at that position.
+- **Every mutating path funnels through `renumberDay()`** (`workspace-store.ts`), shared with
+  `buildItinerary`. Both AI paths hand back positions computed without knowledge of the rows
+  already on that day.
+
+Chat edits are applied immediately but snapshot what they touch first, so the confirmation toast
+can offer Undo — fuzzy title matching ("the candy shop") can resolve to the wrong row and a
+removal is otherwise unrecoverable. The snapshot captures prior day/order/time for every touched
+row, ids of anything created, and full copies of anything deleted.
+
+⚠️ **Testing note:** the database reflects a chat edit *before* the mutation resolves, so a test
+that polls the DB and then clicks "Undo" will race the toast. Wait for the button, not the data.
+
 ### Itinerary building: the planner only sees staged activities
 
 `buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
@@ -443,10 +480,10 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
-- Test users `claude-a1-verify-a1run1@example.com`, `claude-a2-verify-a2run1@example.com`,
-  `claude-a2-verify-a2run2@example.com`, `claude-a2-verify-a2run3@example.com` (v0.5.0
-  verification) still exist in Supabase auth. Their trips and items were deleted; only the auth
-  rows remain.
+- v0.5.0 verification test users still exist in Supabase auth (trips and items all deleted; only
+  the auth rows remain): `claude-a1-verify-a1run1@`, `claude-a2-verify-a2run1@`,
+  `claude-a2-verify-a2run2@`, `claude-a2-verify-a2run3@`, `claude-a3-verify-a3run1@`,
+  `claude-a3-verify-a3run2@` — all `@example.com`.
 - Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
   and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
   needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going

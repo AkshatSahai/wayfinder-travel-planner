@@ -52,8 +52,13 @@ interface Props {
   startDate: string | null;
   endDate: string | null;
   partySize: number;
-  /** Activities added to this trip but not yet scheduled onto a day. */
-  staged: Item[];
+  /**
+   * Every activity on the trip — scheduled and not. This tab is the master
+   * list, so an activity the itinerary chat adds shows up here too.
+   */
+  activities: Item[];
+  /** How many of those still have no day; drives the build-out button. */
+  unscheduledCount: number;
   /**
    * Manually-created trips open on a blank slate — nothing is fetched until the
    * traveler asks for suggestions. AI trips pre-open the browse dialog.
@@ -72,7 +77,8 @@ export function ActivitiesPanel({
   startDate,
   endDate,
   partySize,
-  staged,
+  activities,
+  unscheduledCount,
   autoBrowse,
   onAdd,
   onRemove,
@@ -119,8 +125,9 @@ export function ActivitiesPanel({
         onAdd={onAdd}
       />
 
-      <StagedList
-        staged={staged}
+      <ActivityList
+        activities={activities}
+        unscheduledCount={unscheduledCount}
         destination={destination}
         onRemove={onRemove}
         onBrowse={() => setBrowseOpen(true)}
@@ -360,32 +367,45 @@ function detailOf(item: Item, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function StagedList({
-  staged,
+function ActivityList({
+  activities,
+  unscheduledCount,
   destination,
   onRemove,
   onBrowse,
   onBuildItinerary,
   building,
 }: {
-  staged: Item[];
+  activities: Item[];
+  unscheduledCount: number;
   destination: string;
   onRemove: (id: string) => void;
   onBrowse: () => void;
   onBuildItinerary: () => void;
   building: boolean;
 }) {
+  // Unscheduled first — those are the ones needing action.
+  const rows = activities
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.day_index ?? -1) - (b.day_index ?? -1) || (a.sort_order ?? 0) - (b.sort_order ?? 0),
+    );
+  const scheduledCount = activities.length - unscheduledCount;
+
   return (
     <section className="rounded-2xl border border-border bg-card p-5 shadow-soft">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-display text-xl font-semibold">Your activities</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {staged.length === 0
+            {activities.length === 0
               ? "Nothing added yet. Add your own above, or browse what's on around " +
                 destination +
                 "."
-              : `${staged.length} ${staged.length === 1 ? "activity" : "activities"} ready to schedule. Nothing is on your itinerary until you build it out.`}
+              : unscheduledCount === 0
+                ? `All ${activities.length} scheduled onto your itinerary.`
+                : `${unscheduledCount} not scheduled yet${scheduledCount > 0 ? `, ${scheduledCount} on your itinerary` : ""}.`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -394,13 +414,13 @@ function StagedList({
           </Button>
           <Button
             size="sm"
-            disabled={staged.length === 0 || building}
+            disabled={unscheduledCount === 0 || building}
             onClick={onBuildItinerary}
             data-testid="build-itinerary-btn"
             title={
-              staged.length === 0
-                ? "Add at least one activity first"
-                : "Let AI arrange these into a day-by-day plan"
+              unscheduledCount === 0
+                ? "Everything is already scheduled"
+                : "Let AI arrange the unscheduled ones into your plan"
             }
           >
             <CalendarRange className="mr-1 h-4 w-4" />
@@ -409,7 +429,7 @@ function StagedList({
         </div>
       </div>
 
-      {staged.length === 0 ? (
+      {activities.length === 0 ? (
         <div
           className="mt-4 rounded-xl border border-dashed border-border p-8 text-center"
           data-testid="activities-blank-slate"
@@ -434,9 +454,10 @@ function StagedList({
               </tr>
             </thead>
             <tbody>
-              {staged.map((a) => {
+              {rows.map((a) => {
                 const when = detailOf(a, "preferred_date");
                 const location = detailOf(a, "location");
+                const scheduled = a.day_index != null;
                 return (
                   <tr
                     key={a.id}
@@ -457,9 +478,16 @@ function StagedList({
                       </span>
                     </td>
                     <td className="py-2 pr-3 text-muted-foreground">
-                      {when ? (
-                        <span className="flex items-center gap-1">
-                          <CalendarDays className="h-3 w-3" /> {when}
+                      {scheduled ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          data-testid="activity-day-badge"
+                        >
+                          <CalendarDays className="h-3 w-3" /> Day {(a.day_index ?? 0) + 1}
+                        </span>
+                      ) : when ? (
+                        <span className="flex items-center gap-1 text-xs">
+                          <CalendarDays className="h-3 w-3" /> Wants {when}
                         </span>
                       ) : (
                         <span className="text-xs">Any day</span>
