@@ -29,8 +29,11 @@ and a live budget.
 **⚠️ Not Next.js.** Specs and outside docs sometimes say "Next.js" — it's TanStack Start.
 File-based routing rules live in `src/routes/README.md`. `routeTree.gen.ts` is generated.
 
-**⚠️ Folder nesting.** The GitHub repo root == the `wayfinder-travel-planner-main/` folder.
-If you downloaded a ZIP you may be one level up; `package.json` marks the real root.
+**⚠️ Folder nesting — and a ZIP is not a clone.** The GitHub repo root ==
+the `wayfinder-travel-planner-main/` folder. If you downloaded a ZIP you may be one level up;
+`package.json` marks the real root. A ZIP extract also has **no `.git` directory**, so nothing
+edited inside it can ever be committed, pushed, or deployed — `git status` there fails with
+`fatal: not a git repository`. Work from a real `git clone`; check for `.git` before starting.
 
 **⚠️ Line endings on Windows.** `.gitattributes` pins the working tree to LF. Before it
 existed, a fresh clone on Windows (where Git defaults `core.autocrlf` to `true`) checked out
@@ -79,6 +82,21 @@ is not — never put it in a file, a chat, or this repo.**
 
 > Tip: `VITE_SUPABASE_URL` and the publishable key can always be recovered from the deployed
 > production JS bundle if you lose them. The server-only keys cannot.
+
+### Repo access (GitHub CLI)
+
+Two things bite when setting this up on a new machine — both look like something else:
+
+- **A successful `gh auth login` does not necessarily configure git.** Passing explicit flags
+  (e.g. `--git-protocol https`) suppresses the interactive "Authenticate Git with your GitHub
+  credentials?" prompt, so `gh auth status` reports a healthy login while `git push` still has
+  no credential helper and fails to authenticate. Fix: `gh auth setup-git`. Verify with
+  `git config --global --get-regexp credential` — it should list a `gh auth git-credential`
+  helper for `https://github.com`.
+- **The default token scopes omit `workflow`.** A device-flow login grants `repo`, `read:org`,
+  and `gist`. That covers everything in this repo today, but any push whose diff touches
+  `.github/workflows/` will be rejected by GitHub with a scope error that reads like a
+  permissions problem on the repo. Fix when needed: `gh auth refresh -s workflow`.
 
 ---
 
@@ -265,6 +283,10 @@ npx eslint src/           # 0 errors; 7 react-refresh warnings in components/ui 
 npm run build             # compiles every module incl. SSR — catches more than tsc alone
 ```
 
+The eslint count is the load-bearing one: **exactly 7 warnings and 0 errors** is the healthy
+baseline. Thousands of errors that are all ``Delete `␍` `` mean your checkout is CRLF, not that
+the code regressed — see the line-endings note in §1 and fix the checkout, never the files.
+
 **Workspace UI** requires a real browser (see §3 — `ssr: false`). The approach that worked:
 
 1. Create a Supabase user via the auth REST API (`mailer_autoconfirm` is on, so signup returns
@@ -360,6 +382,12 @@ Production has these keys, so the quickest check is the live site.
   provider higher in the tree would be cleaner.
 
 **Housekeeping**
+- **`npm audit` reports 4 transitive advisories** (2026-08-16): `brace-expansion`, `js-yaml`,
+  `nanoid` (high) and `postcss` (moderate). All are DoS or build-tooling issues, none is a direct
+  dependency, and every one reports `fixAvailable: true` — so plain `npm audit fix` should clear
+  them without a forced major bump. Left alone deliberately rather than folded into an unrelated
+  change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
+  surfaces as a build failure, not a test failure.
 - Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
   and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
   needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going
