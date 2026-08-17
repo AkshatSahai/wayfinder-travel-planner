@@ -75,6 +75,7 @@ export type Database = {
           budget_cents: number | null;
           created_at: string;
           currency: string;
+          day_start_times: Json | null;
           destination: string | null;
           end_date: string | null;
           id: string;
@@ -90,6 +91,7 @@ export type Database = {
           budget_cents?: number | null;
           created_at?: string;
           currency?: string;
+          day_start_times?: Json | null;
           destination?: string | null;
           end_date?: string | null;
           id?: string;
@@ -105,6 +107,7 @@ export type Database = {
           budget_cents?: number | null;
           created_at?: string;
           currency?: string;
+          day_start_times?: Json | null;
           destination?: string | null;
           end_date?: string | null;
           id?: string;

@@ -14,6 +14,8 @@ context file is worse than none — it will be trusted.
 
 ## Quick orientation
 
+- **Check `FEATURE_TRACKING.md`** for what's scoped-but-unbuilt, built-but-unverified (needs
+  manual testing), and explicitly deferred. Update it whenever that status changes.
 - **TanStack Start, not Next.js.** Routing conventions are in `src/routes/README.md`.
 - The repo root is the folder containing `package.json`. A ZIP download nests it one level deeper.
 - Client and server read **different env var names** for Supabase — see `context.md` §2. Getting

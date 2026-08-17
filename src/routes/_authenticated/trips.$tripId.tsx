@@ -24,7 +24,7 @@ import {
   adviseItineraryChange,
   type ItineraryOp,
 } from "@/lib/trip-ai.functions";
-import { assessDay, averageDayCost } from "@/lib/itinerary-advice";
+import { assessDay, averageDayCost, checkArrivalConflict } from "@/lib/itinerary-advice";
 import {
   daysBetween,
   committedItems,
@@ -35,6 +35,7 @@ import {
   minutesFromTimestamp,
   renumberDay,
   stagedActivities,
+  timestampFor,
   LODGING_BOOKED,
   LODGING_CANDIDATE,
   type LatLng,
@@ -52,6 +53,9 @@ import { ItineraryDayPanel } from "@/components/travel/itinerary-day-panel";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
 import { ShareTripDialog } from "@/components/travel/share-trip-dialog";
 import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
+import type { Tables } from "@/integrations/supabase/types";
+
+type Item = Tables<"trip_items">;
 
 const authRoute = getRouteApi("/_authenticated");
 
@@ -295,24 +299,18 @@ function WorkspacePage() {
         staging.map((a) => [a.id, (a.details ?? {}) as Record<string, unknown>]),
       );
 
-      // The model returns a wall-clock "HH:MM"; the column is a timestamp, so it
-      // only becomes real once combined with that day's actual date.
-      const timestampFor = (dayIndex: number, hhmm: string | null): string | null => {
-        if (!hhmm || !trip.start_date) return null;
-        if (!/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
-        const d = new Date(`${trip.start_date}T00:00:00`);
-        d.setDate(d.getDate() + dayIndex);
-        const [h, m] = hhmm.split(":");
-        return `${d.toISOString().slice(0, 10)}T${h.padStart(2, "0")}:${m}:00`;
-      };
-
       const assignedIds = new Set(res.assignments.map((a) => a.id));
       const affectedDays = new Set(res.assignments.map((a) => a.day_index));
 
       // The planner only sees staged activities, so it numbers sort_order from 0
       // and would collide with whatever is already on that day (including the
       // booked stay). Renumbering each touched day is shared with the chat
-      // editor — see renumberDay in workspace-store.
+      // editor — see renumberDay in workspace-store. Ordering is by position
+      // only: the AI no longer assigns clock times, so `minutes` stays null for
+      // every row here and renumberDay falls back to `prior` (the AI's own
+      // sequence for new rows, the existing sort_order for old ones) — a
+      // manually pinned time (set separately, per item) is never touched by a
+      // rebuild.
       const rowsByDay = new Map<number, (OrderableRow & { isNew: boolean; day: number })[]>();
       for (const day of affectedDays) rowsByDay.set(day, []);
 
@@ -320,7 +318,7 @@ function WorkspacePage() {
         rowsByDay.get(a.day_index)!.push({
           id: a.id,
           day: a.day_index,
-          minutes: minutesFromClock(a.start_time),
+          minutes: null,
           prior: a.sort_order,
           isNew: true,
         });
@@ -332,7 +330,7 @@ function WorkspacePage() {
         rowsByDay.get(item.day_index)!.push({
           id: item.id,
           day: item.day_index,
-          minutes: minutesFromTimestamp(item.start_time),
+          minutes: null,
           prior: item.sort_order ?? 0,
           isNew: false,
         });
@@ -347,18 +345,15 @@ function WorkspacePage() {
         id: string;
         day_index?: number;
         sort_order?: number;
-        start_time?: string;
         details?: Record<string, unknown>;
       };
       const patches: ItemPatch[] = res.assignments.map((a): ItemPatch => {
         const enrich = enrichById.get(a.id);
         const base = detailsById.get(a.id) ?? {};
-        const stamp = timestampFor(a.day_index, a.start_time);
         return {
           id: a.id,
           day_index: a.day_index,
           sort_order: finalOrder.get(a.id) ?? a.sort_order,
-          ...(stamp ? { start_time: stamp } : {}),
           details: {
             ...base,
             // Only fill what the activity was missing — never overwrite a
@@ -407,7 +402,6 @@ function WorkspacePage() {
 
     const undo: UndoSnapshot = { positions: [], added: [], removed: [] };
     const nextDay = new Map<string, number | null>();
-    const nextTime = new Map<string, string | null>();
     const removedIds = new Set<string>();
 
     for (const op of ops) {
@@ -415,8 +409,6 @@ function WorkspacePage() {
         removedIds.add(op.id);
       } else if (op.op === "move" && op.id && byId.has(op.id) && op.day_index != null) {
         nextDay.set(op.id, op.day_index);
-      } else if (op.op === "retime" && op.id && byId.has(op.id)) {
-        nextTime.set(op.id, op.start_time);
       } else if (op.op === "swap_days" && op.day_a != null && op.day_b != null) {
         // Everything on those days moves, not just activities — otherwise the
         // booked stay is left behind on the wrong day.
@@ -428,7 +420,7 @@ function WorkspacePage() {
     }
 
     // Snapshot before anything changes.
-    for (const id of new Set([...nextDay.keys(), ...removedIds, ...nextTime.keys()])) {
+    for (const id of new Set([...nextDay.keys(), ...removedIds])) {
       const item = byId.get(id);
       if (item) {
         undo.positions.push({
@@ -501,13 +493,14 @@ function WorkspacePage() {
     const patches: ChatPatch[] = [];
     for (const day of touched) {
       if (day < 0 || day >= numDays) continue;
+      // `minutes: null` for everything: chat only ever moves/adds/removes by
+      // position now, never by clock time, so a manually pinned time (set
+      // separately, per item) is never disturbed by a rebuild here.
       const rows: OrderableRow[] = survivors
         .filter((i) => dayOf(i) === day && !isStagedActivity({ ...i, day_index: dayOf(i) }))
         .map((i) => ({
           id: i.id,
-          minutes: nextTime.has(i.id)
-            ? minutesFromClock(nextTime.get(i.id) ?? null)
-            : minutesFromTimestamp(i.start_time),
+          minutes: null,
           prior: i.sort_order ?? 0,
         }));
       // Freshly created rows have no prior position; park them at the end of
@@ -627,6 +620,62 @@ function WorkspacePage() {
         },
       }),
     onSuccess: invalidate,
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  /** A day's configured start time only feeds drive-time guidance and the
+   * arrival-conflict check below — it is never written onto an item. */
+  const setDayStartTime = (dayIndex: number, hhmm: string | null) => {
+    const trip = data!.trip;
+    const current = ((trip.day_start_times ?? {}) as Record<string, string>) ?? {};
+    const next = { ...current };
+    if (hhmm) next[String(dayIndex)] = hhmm;
+    else delete next[String(dayIndex)];
+    updateMut.mutate({ day_start_times: next });
+  };
+
+  /**
+   * Pin a single activity's arrival time — the one remaining write path for
+   * `start_time`, now that the AI planner and chat only ever sequence by
+   * position. Reuses the same lightweight, local pattern as the drag advisor
+   * (`checkArrivalConflict`) rather than a second AI round trip: only surfaces
+   * a note when the pin genuinely doesn't work given the day's other stops.
+   */
+  const pinTimeMut = useMutation({
+    mutationFn: async (payload: { item: Item; hhmm: string | null }) => {
+      const trip = data!.trip;
+      const stamp = timestampFor(trip.start_date, payload.item.day_index ?? 0, payload.hhmm);
+      await updateItemFn({ data: { id: payload.item.id, start_time: stamp } });
+      return { item: payload.item, stamp };
+    },
+    onSuccess: ({ item, stamp }) => {
+      invalidate();
+      if (!stamp || item.day_index == null) return;
+
+      const dayStartTimes = (data!.trip.day_start_times ?? {}) as Record<string, string>;
+      const dayStartMinutes = minutesFromClock(dayStartTimes[String(item.day_index)] ?? null);
+      const dayItems = committedItems(data!.items)
+        .filter((i) => i.day_index === item.day_index)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+        .map((i) => {
+          const d = (i.details ?? {}) as Record<string, unknown>;
+          return {
+            id: i.id,
+            title: i.title,
+            minutes:
+              i.id === item.id ? minutesFromTimestamp(stamp) : minutesFromTimestamp(i.start_time),
+            duration_hours: (d.duration_hours as number) ?? null,
+            coords: (d.coords as LatLng) ?? null,
+          };
+        });
+
+      const pinnedMinutes = minutesFromTimestamp(stamp);
+      if (pinnedMinutes == null) return;
+      const result = checkArrivalConflict(dayItems, item.id, pinnedMinutes, dayStartMinutes);
+      if (result.conflict && result.detail) {
+        setAdvice({ day: item.day_index, itemId: item.id, note: result.detail });
+      }
+    },
     onError: (err: Error) => toast.error(err.message),
   });
 
@@ -849,6 +898,9 @@ function WorkspacePage() {
               items={items}
               numDays={numDays}
               startDate={trip.start_date}
+              dayStartTimes={(trip.day_start_times ?? {}) as Record<string, string>}
+              onSetDayStartTime={setDayStartTime}
+              onPinTime={(item, hhmm) => pinTimeMut.mutate({ item, hhmm })}
               chat={{
                 messages: chatMessages,
                 pending: chatMut.isPending,
@@ -864,6 +916,9 @@ function WorkspacePage() {
                   tripId={tripId}
                   destination={destination}
                   dayIndex={dayIdx}
+                  dayStartTime={
+                    ((trip.day_start_times ?? {}) as Record<string, string>)[String(dayIdx)] ?? null
+                  }
                   items={committedItems(items)
                     .filter((i) => i.day_index === dayIdx)
                     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))}

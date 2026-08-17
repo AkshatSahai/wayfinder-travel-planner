@@ -23,6 +23,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   X,
   Plus,
@@ -33,8 +35,10 @@ import {
   GripVertical,
   SendHorizonal,
   Lightbulb,
+  MessageCircle,
+  Clock,
 } from "lucide-react";
-import { formatMoney, committedItems } from "@/lib/workspace-store";
+import { committedItems, formatClockUTC } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Item = Tables<"trip_items">;
@@ -53,6 +57,11 @@ interface Props {
   items: Item[];
   numDays: number;
   startDate: string | null;
+  /** Traveler-set start time per day, keyed by day index as a string ("0", "1", …). */
+  dayStartTimes: Record<string, string>;
+  onSetDayStartTime: (dayIndex: number, hhmm: string | null) => void;
+  /** Pin (or clear, with `hhmm: null`) a single activity's arrival time. */
+  onPinTime: (item: Item, hhmm: string | null) => void;
   chat: {
     messages: ItineraryChatMessage[];
     pending: boolean;
@@ -84,6 +93,9 @@ export function ItineraryPanel({
   items,
   numDays,
   startDate,
+  dayStartTimes,
+  onSetDayStartTime,
+  onPinTime,
   chat,
   advice,
   onDismissAdvice,
@@ -97,6 +109,7 @@ export function ItineraryPanel({
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
   const [chatInput, setChatInput] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
   const [selectedDayRaw, setSelectedDayRaw] = useState(0);
 
   const sendChat = () => {
@@ -225,64 +238,83 @@ export function ItineraryPanel({
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="font-display text-xl font-semibold">Day by day</h2>
-        <p className="text-sm text-muted-foreground">
-          Drag any item to reorder it, or move it to another day — or just ask below.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl font-semibold">Day by day</h2>
+          <p className="text-sm text-muted-foreground">
+            Drag any item to reorder it, or move it to another day.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setChatOpen(true)}
+          data-testid="itinerary-chat-open"
+        >
+          <MessageCircle className="mr-1.5 h-4 w-4" /> Ask AI
+          {chat.messages.length > 0 && (
+            <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+              {chat.messages.length}
+            </span>
+          )}
+        </Button>
       </div>
 
-      {/* Conversational editing. The assistant applies changes directly; every
-          batch is undoable from its confirmation toast. */}
-      <div
-        className="rounded-2xl border border-border bg-card p-4 shadow-soft"
-        data-testid="itinerary-chat"
-      >
-        <div className="max-h-48 space-y-2 overflow-y-auto">
-          {chat.messages.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              Tell me what to change — "move the aquarium to day 3", "remove the boat tour", "swap
-              days 1 and 2", "add dinner at a steakhouse on day 2" — and I'll update the plan.
-            </p>
-          )}
-          {chat.messages.map((m, i) => (
-            <div
-              key={i}
-              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
-                m.role === "user"
-                  ? "ml-auto bg-sidebar-active text-white"
-                  : "bg-muted text-foreground"
-              }`}
+      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
+        <SheetContent
+          side="right"
+          className="flex w-full flex-col gap-0 sm:max-w-md"
+          data-testid="itinerary-chat"
+        >
+          <SheetHeader>
+            <SheetTitle>Ask AI to edit the plan</SheetTitle>
+          </SheetHeader>
+          <div className="my-3 flex-1 space-y-2 overflow-y-auto">
+            {chat.messages.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Tell me what to change — "move the aquarium to day 3", "remove the boat tour", "swap
+                days 1 and 2", "add dinner at a steakhouse on day 2" — and I'll update the plan.
+              </p>
+            )}
+            {chat.messages.map((m, i) => (
+              <div
+                key={i}
+                className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                  m.role === "user"
+                    ? "ml-auto bg-sidebar-active text-white"
+                    : "bg-muted text-foreground"
+                }`}
+              >
+                {m.content}
+              </div>
+            ))}
+            {chat.pending && (
+              <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+                …
+              </div>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              placeholder="Ask for a change…"
+              value={chatInput}
+              data-testid="itinerary-chat-input"
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") sendChat();
+              }}
+            />
+            <Button
+              size="icon"
+              onClick={sendChat}
+              data-testid="itinerary-chat-send"
+              disabled={!chatInput.trim() || chat.pending}
             >
-              {m.content}
-            </div>
-          ))}
-          {chat.pending && (
-            <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
-              …
-            </div>
-          )}
-        </div>
-        <div className="mt-3 flex gap-2">
-          <Input
-            placeholder="Ask for a change…"
-            value={chatInput}
-            data-testid="itinerary-chat-input"
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") sendChat();
-            }}
-          />
-          <Button
-            size="icon"
-            onClick={sendChat}
-            data-testid="itinerary-chat-send"
-            disabled={!chatInput.trim() || chat.pending}
-          >
-            <SendHorizonal className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+              <SendHorizonal className="h-4 w-4" />
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <DndContext
         sensors={sensors}
@@ -320,7 +352,7 @@ export function ItineraryPanel({
 
               return (
                 <DayColumn key={dayIdx} dayIdx={dayIdx}>
-                  <div className="mb-3 flex items-center justify-between">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <h3 className="font-display font-semibold">
                       Day {dayIdx + 1}{" "}
                       {date && (
@@ -329,9 +361,22 @@ export function ItineraryPanel({
                         </span>
                       )}
                     </h3>
-                    <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
-                      <Plus className="mr-1 h-3 w-3" /> Block
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Clock className="h-3.5 w-3.5" />
+                        Start
+                        <Input
+                          type="time"
+                          className="h-7 w-24 px-2 text-xs"
+                          value={dayStartTimes[String(dayIdx)] ?? ""}
+                          onChange={(e) => onSetDayStartTime(dayIdx, e.target.value || null)}
+                          data-testid={`day-start-time-${dayIdx}`}
+                        />
+                      </label>
+                      <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
+                        <Plus className="mr-1 h-3 w-3" /> Block
+                      </Button>
+                    </div>
                   </div>
 
                   {blockDay === dayIdx && (
@@ -373,18 +418,18 @@ export function ItineraryPanel({
 
                   {advice?.day === dayIdx && (
                     <div
-                      className="mb-3 flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3"
+                      className="mb-3 flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/5 py-1 pl-2.5 pr-1 text-xs"
                       data-testid="advisor-note"
                     >
-                      <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
-                      <p className="flex-1 text-sm">{advice.note}</p>
+                      <Lightbulb className="h-3 w-3 shrink-0 text-warning-foreground" />
+                      <p className="flex-1 leading-snug text-muted-foreground">{advice.note}</p>
                       <button
                         onClick={onDismissAdvice}
                         aria-label="Dismiss suggestion"
                         data-testid="advisor-dismiss"
-                        className="text-muted-foreground hover:text-foreground"
+                        className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                       >
-                        <X className="h-4 w-4" />
+                        <X className="h-3 w-3" />
                       </button>
                     </div>
                   )}
@@ -401,7 +446,12 @@ export function ItineraryPanel({
                   >
                     <div className="space-y-2">
                       {dayItems.map((it) => (
-                        <SortableRow key={it.id} item={it} onRemove={onRemove} />
+                        <SortableRow
+                          key={it.id}
+                          item={it}
+                          onRemove={onRemove}
+                          onPinTime={onPinTime}
+                        />
                       ))}
                     </div>
                   </SortableContext>
@@ -480,7 +530,15 @@ function DayColumn({ dayIdx, children }: { dayIdx: number; children: React.React
   );
 }
 
-function SortableRow({ item, onRemove }: { item: Item; onRemove: (id: string) => void }) {
+function SortableRow({
+  item,
+  onRemove,
+  onPinTime,
+}: {
+  item: Item;
+  onRemove: (id: string) => void;
+  onPinTime: (item: Item, hhmm: string | null) => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
@@ -490,63 +548,114 @@ function SortableRow({ item, onRemove }: { item: Item; onRemove: (id: string) =>
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={isDragging ? "opacity-40" : undefined}
     >
-      <ItemRow item={item} onRemove={onRemove} handleProps={{ ...attributes, ...listeners }} />
+      <ItemRow
+        item={item}
+        onRemove={onRemove}
+        onPinTime={onPinTime}
+        handleProps={{ ...attributes, ...listeners }}
+      />
     </div>
   );
+}
+
+/** "2026-08-17T09:00:00.000Z" -> "09:00", for the pin-time input's initial value. */
+function hhmmFromTimestamp(ts: string | null): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 function ItemRow({
   item,
   onRemove,
+  onPinTime,
   handleProps,
   dragging,
 }: {
   item: Item;
   onRemove?: (id: string) => void;
+  onPinTime?: (item: Item, hhmm: string | null) => void;
   handleProps?: Record<string, unknown>;
   dragging?: boolean;
 }) {
   const Icon = ICONS[item.kind as keyof typeof ICONS] ?? Coffee;
-  const details = (item.details ?? {}) as Record<string, unknown>;
-  const reason = typeof details.planner_reason === "string" ? details.planner_reason : null;
-  const time = item.start_time
-    ? new Date(item.start_time).toLocaleTimeString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-      })
-    : null;
+  const time = formatClockUTC(item.start_time);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [pinValue, setPinValue] = useState(() => hhmmFromTimestamp(item.start_time));
   return (
     <div
-      className={`group flex items-start gap-2 rounded-lg border border-border bg-background p-3 ${
+      className={`group flex items-center gap-2 rounded-lg border border-border bg-background p-3 ${
         dragging ? "shadow-card" : ""
       }`}
     >
       <button
         {...handleProps}
-        className="mt-0.5 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+        className="cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
         title="Drag to reorder or move day"
         aria-label={`Reorder ${item.title}`}
       >
         <GripVertical className="h-4 w-4" />
       </button>
-      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-      <div className="flex-1">
-        <p className="font-medium">
-          {time && <span className="mr-2 text-xs text-muted-foreground">{time}</span>}
-          {item.title}
-        </p>
-        {item.subtitle && <p className="text-xs text-muted-foreground">{item.subtitle}</p>}
-        {reason && (
-          <p className="mt-0.5 text-xs italic text-muted-foreground" data-testid="planner-reason">
-            {reason}
-          </p>
-        )}
-      </div>
-      <div className="text-right">
-        <p className="text-sm font-medium">
-          {item.cost_cents ? formatMoney(item.cost_cents) : "—"}
-        </p>
-      </div>
+      <Icon className="h-4 w-4 shrink-0 text-primary" />
+      <p className="flex-1 truncate font-medium">{item.title}</p>
+      {onPinTime && (
+        <Popover
+          open={pinOpen}
+          onOpenChange={(open) => {
+            setPinOpen(open);
+            if (open) setPinValue(hhmmFromTimestamp(item.start_time));
+          }}
+        >
+          <PopoverTrigger asChild>
+            <button
+              className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+                time
+                  ? "border-primary/30 bg-primary/5 text-primary"
+                  : "border-border text-muted-foreground opacity-0 group-hover:opacity-100"
+              }`}
+              data-testid="pin-time-trigger"
+              aria-label={time ? `Arrival time ${time}` : `Set arrival time for ${item.title}`}
+            >
+              <Clock className="h-3 w-3" />
+              {time ?? "Set time"}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-56" align="end">
+            <p className="mb-2 text-xs text-muted-foreground">Planned arrival time</p>
+            <div className="flex gap-2">
+              <Input
+                type="time"
+                value={pinValue}
+                onChange={(e) => setPinValue(e.target.value)}
+                className="h-8"
+                data-testid="pin-time-input"
+              />
+              <Button
+                size="sm"
+                onClick={() => {
+                  onPinTime(item, pinValue || null);
+                  setPinOpen(false);
+                }}
+                disabled={!pinValue}
+              >
+                Set
+              </Button>
+            </div>
+            {time && (
+              <button
+                className="mt-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  onPinTime(item, null);
+                  setPinOpen(false);
+                }}
+              >
+                Clear time
+              </button>
+            )}
+          </PopoverContent>
+        </Popover>
+      )}
       {onRemove && (
         <button onClick={() => onRemove(item.id)} className="opacity-0 group-hover:opacity-100">
           <X className="h-4 w-4 text-muted-foreground hover:text-destructive" />

@@ -265,10 +265,11 @@ not the list length.
 
 ### Itinerary chat rewrites positions, and that is not optional
 
-`chatItinerary` returns **operations** (`move` / `remove` / `add` / `swap_days` / `retime`), never
-prose the client has to interpret. Guardrails match `buildItinerary`: operations naming an unknown
-id are dropped, `day_index` is clamped, and ops per turn are capped (20) so one message can't
-rewrite the trip.
+`chatItinerary` returns **operations** (`move` / `remove` / `add` / `swap_days`), never prose the
+client has to interpret. Guardrails match `buildItinerary`: operations naming an unknown id are
+dropped, `day_index` is clamped, and ops per turn are capped (20) so one message can't rewrite the
+trip. There is no `retime` op — see the v0.6.0 entry in §3 below and §4: neither the AI planner nor
+chat assigns clock times any more, only position.
 
 Three things that are easy to get wrong here, all found by testing:
 
@@ -288,6 +289,45 @@ row, ids of anything created, and full copies of anything deleted.
 
 ⚠️ **Testing note:** the database reflects a chat edit *before* the mutation resolves, so a test
 that polls the DB and then clicks "Undo" will race the toast. Wait for the button, not the data.
+
+### Timing is manual now, not AI-assigned (v0.6.0)
+
+Root cause of the "chat says 9 AM but the display order doesn't match" bug: `timestampFor()`
+wrote a wall-clock string with **no timezone offset** into `start_time` (a `TIMESTAMPTZ` column).
+Postgres stored that as a UTC instant; `minutesFromTimestamp()` then read it back with the
+browser's **local** `getHours()`. Anyone not in UTC got a mismatch between what was written and
+what was sorted/displayed. `category` was investigated first (the original report suspected it)
+and ruled out — it only affects one advisor heuristic (nightlife before 4pm in
+`itinerary-advice.ts`), never ordering.
+
+Fix and the resulting design, both in `workspace-store.ts`:
+- `timestampFor`/`minutesFromTimestamp` now both operate in UTC, so "9 AM" round-trips correctly
+  regardless of the browser's timezone. The column still isn't a real instant — it's a label for
+  "this wall-clock time on this day of the trip" — UTC is just the fixed convention used to store
+  and read it consistently.
+- **The AI planner and chat no longer assign clock times at all** — `buildItinerary`'s
+  `scheduleSchema` and `chatItinerary`'s op schema both dropped `start_time`/`retime`. Sequencing
+  is 100% by position (`sort_order`) now. This sidesteps the timezone class of bug entirely for
+  the AI paths rather than just patching the read/write mismatch.
+- The one remaining `start_time` write path is a traveler manually pinning a single item's arrival
+  time (a popover on the item's time chip, `itinerary-panel.tsx`). Pinning **never re-derives
+  order** — `renumberDay()` calls from `buildMut`/`applyOps` in `trips.$tripId.tsx` always pass
+  `minutes: null` now, so a pinned time is metadata + a conflict check, not something that moves
+  the item. This matches the spec's intent: drag order is the one source of truth for sequence.
+- Pinning runs `checkArrivalConflict` (`itinerary-advice.ts`) — a new pure, local heuristic in the
+  same family as `assessDay`/A4: sums duration + straight-line travel time (30mph assumed, same
+  order of magnitude as the "long hop" check) for everything ahead of the pinned item in display
+  order, and flags if the pinned time is earlier than that allows. No AI call.
+- Each day also got an optional `day_start_times` column on `trips` (JSONB, keyed by day index),
+  set from the day column header. It's read into `dayPlan`'s guidance prompt as context and used
+  as the arrival-check's fallback "day start" when the first item has no pinned time of its own —
+  it is never written onto a `trip_items` row.
+- The drag advisor banner (A4) was kept, not removed — restyled as a smaller dismissible pill
+  instead of a bordered callout, per an explicit user call weighing "remove it" against "it was
+  built on purpose to catch exactly this."
+- The itinerary chat moved from an always-visible block above the day tabs into a `Sheet`-based
+  right-side drawer, opened on demand — chosen over a permanently-split 3-column layout so the day
+  list and map keep their existing full width by default.
 
 ### Itinerary building: the planner only sees staged activities
 
@@ -496,6 +536,28 @@ not a code change to the existing trip/item server fns.
 
 ## 4. What shipped recently
 
+### v0.6.0 (itinerary timing fix + UI cleanup) — 2026-08-17
+
+Not yet verified end-to-end in a live browser — see §6/§7 and `FEATURE_TRACKING.md` for what
+still needs a real multi-day trip run-through. Migration `20260817010000_day_start_times.sql`
+(adds `trips.day_start_times`) needs to be applied to the live Supabase project before this is
+usable in production; it has not been applied yet as of this entry.
+
+1. **Timezone root-cause fix** for the "9 AM doesn't match display order" bug — see §3, "Timing
+   is manual now, not AI-assigned."
+2. **AI planner and chat stopped assigning clock times.** `buildItinerary`/`chatItinerary` only
+   ever place by day + position now; the `retime` chat op was removed.
+3. **Per-day start time** (`trips.day_start_times`, JSONB) — set from the day column header,
+   feeds `dayPlan`'s guidance prompt, never written onto an item.
+4. **Per-item pinned arrival time** — a popover on the item's time chip in `itinerary-panel.tsx`,
+   backed by a new `checkArrivalConflict` heuristic in `itinerary-advice.ts` (same local,
+   no-AI-call pattern as the A4 drag advisor).
+5. **Chat moved into a right-side drawer** (shadcn `Sheet`), opened via an "Ask AI" button,
+   instead of an always-visible block above the day tabs.
+6. **Trimmed itinerary cards** — dropped the subtitle/description and planner-reason lines, and
+   the inline cost. Restyled the A4 advisor banner as a smaller dismissible pill rather than
+   removing it (kept on purpose — see §3).
+
 ### v0.5.0 (activities/itinerary AI overhaul + live collaboration) — 2026-08-17
 
 Shipped as PRs #1–#9, all merged to `main` and deployed. Verified live in production: the photo
@@ -649,6 +711,12 @@ all — so waiting on `trip-meta-bar` for them is the wrong assertion. Its *abse
 ---
 
 ## 6. Known gaps — verified vs not
+
+**Not yet verified — v0.6.0 (itinerary timing fix):** the day-start-time field, per-item pinned
+arrival time + its conflict check, the quieter advisor banner, and the chat drawer all need a real
+multi-day trip run-through — none of it has been exercised against a live Supabase project (the
+`day_start_times` migration also hasn't been applied yet). Tracked with checkboxes in
+`FEATURE_TRACKING.md` rather than duplicated here — check that file off as each is confirmed.
 
 **Verified against live Supabase + real browser (25/25 checks, v0.3.0):** booking exclusivity,
 budget excluding candidates, blank-slate activities, drag persistence across reload, dashboard

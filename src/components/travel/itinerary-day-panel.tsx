@@ -12,6 +12,9 @@ interface Props {
   tripId: string;
   destination: string;
   dayIndex: number;
+  /** The traveler-set start time for this day, e.g. "09:00", or null if unset.
+   * Only feeds drive-time/route guidance below — never written onto an item. */
+  dayStartTime: string | null;
   /** The selected day's rows, already in display order. */
   items: Item[];
 }
@@ -42,7 +45,7 @@ function detailString(item: Item, key: string): string | null {
  * "Live · Google" restates values Google actually returned, "Guidance" is
  * model-written advice. Nothing model-written is ever presented as measured.
  */
-export function ItineraryDayPanel({ tripId, destination, dayIndex, items }: Props) {
+export function ItineraryDayPanel({ tripId, destination, dayIndex, dayStartTime, items }: Props) {
   const planFn = useServerFn(dayPlan);
 
   const stops = items.map((i) => {
@@ -65,8 +68,11 @@ export function ItineraryDayPanel({ tripId, destination, dayIndex, items }: Prop
   const signature = stops.map((s) => `${s.id}:${s.lat ?? "-"}:${s.start_time ?? "-"}`).join("|");
 
   const q = useQuery({
-    queryKey: ["day-plan", tripId, dayIndex, signature],
-    queryFn: () => planFn({ data: { destination, day_number: dayIndex + 1, stops } }),
+    queryKey: ["day-plan", tripId, dayIndex, dayStartTime, signature],
+    queryFn: () =>
+      planFn({
+        data: { destination, day_number: dayIndex + 1, day_start_time: dayStartTime, stops },
+      }),
     enabled: stops.length > 0 && destination.length > 0,
     staleTime: Infinity,
     retry: false,

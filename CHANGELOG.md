@@ -1,5 +1,57 @@
 # Wayfinder Changelog
 
+## v0.6.0 — 2026-08-17
+
+### Overview
+
+Itinerary timing fix and cleanup, on top of v0.5.0's rebuild.
+
+The AI planner and chat no longer assign clock times — order is purely by position (drag it where
+you want it). If you want a specific stop pinned to a real time (a reservation, say), you can set
+that directly on the item, and it'll flag if the day's other stops don't leave enough time to make
+it. Each day also gets its own optional start time, which only feeds the day's drive-time guidance.
+The AI chat moved into a slide-out panel instead of sitting above the day list, and itinerary cards
+lost their description and inline cost lines — the budget total is already in the top bar.
+
+### Updates
+
+#### Bug Fixes
+
+**Chat-set times didn't match the displayed order ("start all days at 9 AM" looked wrong)**
+
+- _Technical:_ `timestampFor()` wrote a wall-clock string with no timezone offset into a
+  `TIMESTAMPTZ` column, which Postgres stored as a UTC instant; `minutesFromTimestamp()` then read
+  it back with the browser's local `getHours()`. For anyone not in UTC, the time written and the
+  time sorted/displayed drifted apart. `category` was investigated as a possible cause per the
+  original bug report and ruled out — it only affects one advisor heuristic (nightlife before
+  4pm), never ordering. Fixed by writing and reading both in UTC (`workspace-store.ts`).
+- _For everyone:_ Times you set now mean the same thing everywhere, regardless of your timezone.
+
+#### Itinerary
+
+**Manual timing, not automatic**
+
+- The AI "Build out itinerary" and itinerary chat no longer assign clock times to activities —
+  only day and position. Drag order is the only thing that determines sequence now.
+- Each day has an optional start time (set in that day's column header) that feeds the AI's
+  drive-time/route guidance for that day — it's never written onto an item.
+- Any single item can be pinned to a specific arrival time (click its time chip). Pinning runs the
+  same lightweight, local check the drag advisor uses — no extra AI call — and flags it inline if
+  the day's earlier stops don't leave enough time to make it.
+
+**Chat moved to a slide-out panel**
+
+- The itinerary chat is now a right-side drawer ("Ask AI"), opened on demand, instead of an
+  always-visible block above the day tabs. Day tabs, the item list, and the day map keep their
+  full-width layout when it's closed.
+
+**Quieter advisor banner, trimmed cards**
+
+- The drag advisor's note is now a small dismissible pill instead of a bordered callout block —
+  same signals, less visual weight.
+- Itinerary cards no longer show the activity description or planner-reason line, or an inline
+  cost — the trip's budget total is already in the top pill bar.
+
 ## v0.5.0 — 2026-08-17
 
 ### Overview

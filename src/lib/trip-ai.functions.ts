@@ -445,7 +445,6 @@ const scheduleSchema = z.object({
       id: z.string(),
       day_index: z.number().int(),
       sort_order: z.number().int(),
-      start_time: z.string().nullable(),
       reason: z.string(),
     }),
   ),
@@ -571,7 +570,6 @@ Rules:
 - Respect any "traveler asked for <date>" preference: map that date to its day_index and keep it there.
 - Pace realistically: roughly 2-4 activities per day, and don't stack a day past ~10 hours of activity time.
 - Spread cost across days where you can rather than putting every expensive item on one day.
-- start_time is "HH:MM" 24-hour local, or null if a specific time doesn't matter.
 - "reason" is a SHORT phrase (max 12 words) explaining the placement, e.g. "near the lakefront cluster" or "sunset views".
 - day_notes: one short note per day summarising the day's shape. Only for days that have activities.
 
@@ -617,7 +615,6 @@ ${lines}`,
         id: a.id,
         day_index: Math.min(i % data.num_days, data.num_days - 1),
         sort_order: 900 + i,
-        start_time: null,
         reason: "added automatically — the planner left it out",
       });
     });
@@ -657,6 +654,9 @@ export const dayPlan = createServerFn({ method: "POST" })
       .object({
         destination: z.string(),
         day_number: z.number().int().min(1),
+        /** Traveler-set start time for this day, e.g. "09:00", or null. Feeds
+         * the guidance prompt only — not a per-stop time. */
+        day_start_time: z.string().nullable(),
         stops: z
           .array(
             z.object({
@@ -724,6 +724,7 @@ export const dayPlan = createServerFn({ method: "POST" })
     const guidance = await generateStructured(
       `Day ${data.day_number} of a trip to ${data.destination} has these stops, in order:
 ${summary || "(none)"}
+${data.day_start_time ? `\nThe traveler plans to start the day around ${data.day_start_time}.` : ""}
 ${route ? `\nDriving between them totals about ${route.total_hours.toFixed(1)} hours over ${Math.round(route.total_miles)} miles.` : ""}
 
 Give up to 3 short, practical notes for this specific day — best time of day for
@@ -818,8 +819,8 @@ no preamble, stating the issue and why it matters. Do not tell them to undo it.`
 const MAX_OPS_PER_TURN = 20;
 
 const itineraryOpSchema = z.object({
-  op: z.enum(["move", "remove", "add", "swap_days", "retime"]),
-  // move / remove / retime
+  op: z.enum(["move", "remove", "add", "swap_days"]),
+  // move / remove
   id: z.string().nullable(),
   // move
   day_index: z.number().int().nullable(),
@@ -832,8 +833,6 @@ const itineraryOpSchema = z.object({
   // swap_days
   day_a: z.number().int().nullable(),
   day_b: z.number().int().nullable(),
-  // retime
-  start_time: z.string().nullable(),
 });
 
 const chatItinerarySchema = z.object({
@@ -907,7 +906,10 @@ Operation types — set unused fields to null:
 - remove:    id
 - add:       title, category, cost_cents, location, day_index (null = add without scheduling it)
 - swap_days: day_a, day_b (exchanges everything between the two days)
-- retime:    id, start_time as "HH:MM" 24-hour, or null to clear
+
+You cannot set or change an item's clock time — travelers pin a specific arrival time
+themselves, from the item directly, if they want one. Sequencing is by position (sort_order),
+not time.
 
 Rules:
 - Days are 0-based internally but the traveler counts from 1. "day 2" means day_index 1.
@@ -957,7 +959,7 @@ ${transcript}`,
         continue;
       }
       // Anything naming a row we don't have is a hallucinated target.
-      if (["move", "remove", "retime"].includes(raw.op) && (!raw.id || !known.has(raw.id))) {
+      if (["move", "remove"].includes(raw.op) && (!raw.id || !known.has(raw.id))) {
         dropped++;
         continue;
       }

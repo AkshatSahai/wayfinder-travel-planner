@@ -138,6 +138,59 @@ export function assessDay(
   return signals;
 }
 
+/** Assumed local driving speed for the arrival-time check — same order of
+ * magnitude as the "long hop" heuristic above; there's no live route available
+ * at the point a time is pinned, only straight-line distance. */
+const ASSUMED_MPH = 30;
+
+export interface ArrivalCheckItem {
+  id: string;
+  title: string;
+  /** Minutes since midnight if this item already has a time, else null. */
+  minutes: number | null;
+  duration_hours: number | null;
+  coords: LatLng | null;
+}
+
+/**
+ * Pure, local check for whether a just-pinned arrival time is realistic given
+ * the day's travel time and duration up to that point — the same lightweight,
+ * no-network pattern as `assessDay`, reused for the per-item "pin a time"
+ * feature rather than inventing a second advisor mechanism.
+ *
+ * `dayItems` must be in the day's current display (drag) order, and must
+ * include the pinned item at its current position. `dayStartMinutes` is the
+ * day's configured start time (day_start_times), or null if unset.
+ */
+export function checkArrivalConflict(
+  dayItems: ArrivalCheckItem[],
+  pinnedId: string,
+  pinnedMinutes: number,
+  dayStartMinutes: number | null,
+): { conflict: boolean; detail: string | null } {
+  const idx = dayItems.findIndex((i) => i.id === pinnedId);
+  if (idx <= 0) return { conflict: false, detail: null };
+
+  let minutesNeeded = 0;
+  for (let i = 0; i < idx; i++) {
+    minutesNeeded += (dayItems[i].duration_hours ?? 1.5) * 60;
+    const next = dayItems[i + 1];
+    if (dayItems[i].coords && next?.coords) {
+      minutesNeeded += (haversineMiles(dayItems[i].coords!, next.coords!) / ASSUMED_MPH) * 60;
+    }
+  }
+
+  const earliestStart = dayItems[0].minutes ?? dayStartMinutes ?? 0;
+  const earliestArrival = earliestStart + minutesNeeded;
+  if (pinnedMinutes < earliestArrival) {
+    return {
+      conflict: true,
+      detail: `"${dayItems[idx].title}" is pinned for ${clock(pinnedMinutes)}, but the stops before it need until roughly ${clock(Math.round(earliestArrival))}.`,
+    };
+  }
+  return { conflict: false, detail: null };
+}
+
 /** Mean per-day spend across the trip, used as the cost-spike baseline. */
 export function averageDayCost(
   items: { day_index: number | null; cost_cents: number | null }[],

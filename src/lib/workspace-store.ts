@@ -100,11 +100,52 @@ export function minutesFromClock(hhmm: string | null | undefined): number | null
   return h * 60 + m;
 }
 
-/** Minutes since midnight from a timestamp column value, or null. */
+/**
+ * Minutes since midnight from a timestamp column value, or null.
+ *
+ * Read in UTC to match how `timestampFor` writes it: the column is a
+ * TIMESTAMPTZ, but the app only ever means a day's *local wall-clock* time,
+ * never a real instant. Writing and reading both in UTC keeps "9 AM" meaning
+ * the same thing everywhere, regardless of the browser's timezone — reading
+ * with `getHours()` (local) previously drifted from what was written whenever
+ * the browser wasn't in UTC, which is what made "start at 9 AM" changes not
+ * match the displayed order.
+ */
 export function minutesFromTimestamp(ts: string | null | undefined): number | null {
   if (!ts) return null;
   const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? null : d.getHours() * 60 + d.getMinutes();
+  return Number.isNaN(d.getTime()) ? null : d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+/**
+ * Combine a trip's start date, a 0-based day offset, and a wall-clock "HH:MM"
+ * into a timestamp, written as UTC so it round-trips through minutesFromTimestamp
+ * without drifting. This is a label for "9:00 AM on this day of the trip", not a
+ * real instant — see minutesFromTimestamp.
+ */
+export function timestampFor(
+  startDate: string | null | undefined,
+  dayIndex: number,
+  hhmm: string | null | undefined,
+): string | null {
+  if (!hhmm || !startDate) return null;
+  if (!/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+  const d = new Date(`${startDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dayIndex);
+  const [h, m] = hhmm.split(":");
+  return `${d.toISOString().slice(0, 10)}T${h.padStart(2, "0")}:${m}:00.000Z`;
+}
+
+/** Format a timestamp written by `timestampFor` back into "H:MM AM/PM", in UTC. */
+export function formatClockUTC(ts: string | null | undefined): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
 }
 
 /**
