@@ -56,7 +56,8 @@ export function ItineraryPanel({ items, numDays, startDate, onAdd, onRemove, onR
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
 
-  // Lodging still under comparison never reaches the itinerary.
+  // Lodging still under comparison, and activities still staged on the
+  // Activities tab, never reach the itinerary.
   const scheduled = committedItems(items);
 
   const days = numDays > 0 ? numDays : Math.max(1, ...scheduled.map((i) => (i.day_index ?? 0) + 1));
@@ -64,7 +65,12 @@ export function ItineraryPanel({ items, numDays, startDate, onAdd, onRemove, onR
   const byDay = new Map<number, Item[]>();
   for (let d = 0; d < days; d++) byDay.set(d, []);
   scheduled.forEach((i) => {
-    const d = Math.min(Math.max(i.day_index ?? 0, 0), days - 1);
+    // Deliberately no `?? 0` fallback: a null day_index means "not scheduled",
+    // and coercing it to day 0 is exactly what used to dump every freshly-added
+    // activity onto Day 1. committedItems already drops staged activities; this
+    // guard covers any other row that reaches here without a day.
+    if (i.day_index == null) return;
+    const d = Math.min(Math.max(i.day_index, 0), days - 1);
     if (!byDay.has(d)) byDay.set(d, []);
     byDay.get(d)!.push(i);
   });

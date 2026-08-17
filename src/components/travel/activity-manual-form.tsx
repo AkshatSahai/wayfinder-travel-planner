@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PlaceAutocomplete } from "./place-autocomplete";
 import { Plus, Link as LinkIcon, ListPlus } from "lucide-react";
-import { daysBetween } from "@/lib/workspace-store";
 import { ACTIVITY_CATEGORIES, type ActivityCategory } from "@/lib/activity-categories";
 import { fetchLinkMetadata } from "@/lib/url-metadata.functions";
 
@@ -16,21 +15,21 @@ interface Props {
   destination: string;
   startDate: string | null;
   endDate: string | null;
-  numDays: number;
   onAdd: (item: {
     kind: "activity";
     title: string;
     subtitle?: string;
     category: string;
     cost_cents: number;
-    day_index: number;
+    /** Always null here — added activities stage, they don't schedule. */
+    day_index: number | null;
     start_time?: string | null;
     details?: Record<string, unknown>;
     source_url?: string;
   }) => void;
 }
 
-export function ActivityManualForm({ destination, startDate, endDate, numDays, onAdd }: Props) {
+export function ActivityManualForm({ destination, startDate, endDate, onAdd }: Props) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState<ActivityCategory>("Activity");
   const [date, setDate] = useState("");
@@ -58,12 +57,6 @@ export function ActivityManualForm({ destination, startDate, endDate, numDays, o
     },
     onError: () => setFetchError("Couldn't read that link — enter details manually."),
   });
-
-  const dayIndexFor = (localDate: string): number => {
-    if (!startDate || !localDate) return 0;
-    const idx = daysBetween(startDate, localDate) - 1;
-    return Math.max(0, Math.min(Math.max(numDays - 1, 0), idx));
-  };
 
   const reset = () => {
     setName("");
@@ -223,11 +216,15 @@ export function ActivityManualForm({ destination, startDate, endDate, numDays, o
               subtitle: notes.trim() || undefined,
               category,
               cost_cents: price ? Math.round(Number(price) * 100) : 0,
-              day_index: date ? dayIndexFor(date) : 0,
+              // Staged, never scheduled. A date the traveler typed is kept as a
+              // preference for "Build out itinerary" to honour, not as a day
+              // assignment — adding an activity must not touch the itinerary.
+              day_index: null,
               start_time: date ? `${date}T${time || "00:00"}:00` : null,
               details: {
                 location: location.trim() || undefined,
                 duration_hours: durationHours ? Number(durationHours) : undefined,
+                preferred_date: date || undefined,
               },
               source_url: sourceUrl.trim() || undefined,
             });

@@ -110,7 +110,10 @@ export function TripDetailsPanel({
   const scheduled = committedItems(items);
   const bookedLodging = items.filter(isBookedLodging);
   const transportItems = scheduled.filter((i) => i.kind === "transport");
-  const activityItems = scheduled.filter((i) => i.kind === "activity");
+  // Counts staged activities too: the traveler has done the "add activities"
+  // work as soon as one exists on the Activities tab, whether or not it has
+  // been scheduled onto a day yet.
+  const activityItems = items.filter((i) => i.kind === "activity");
   const countdown = daysUntil(startDate);
 
   const tasks = [

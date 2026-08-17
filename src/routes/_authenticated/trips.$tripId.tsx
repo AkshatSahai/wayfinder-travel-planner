@@ -17,6 +17,8 @@ import {
 import {
   daysBetween,
   isBookedLodging,
+  isStagedActivity,
+  stagedActivities,
   LODGING_BOOKED,
   LODGING_CANDIDATE,
   type LatLng,
@@ -96,9 +98,12 @@ function WorkspacePage() {
     mutationFn: (item: NewItem) => addFn({ data: item }),
     onSuccess: (_res, item) => {
       invalidate();
-      toast.success(
-        item.category === LODGING_CANDIDATE ? "Added to comparison" : "Added to itinerary",
-      );
+      // Three destinations, three different messages — telling someone their
+      // activity was "added to itinerary" when it was staged is exactly the
+      // confusion this release is fixing.
+      if (item.category === LODGING_CANDIDATE) toast.success("Added to comparison");
+      else if (isStagedActivity(item)) toast.success("Added to your activities");
+      else toast.success("Added to itinerary");
     },
   });
 
@@ -156,6 +161,7 @@ function WorkspacePage() {
   const waypoints = parsed.waypoints ?? [];
   const isManualTrip = parsed.entry_mode === "manual";
   const stays = items.filter((i) => i.kind === "lodging");
+  const staged = stagedActivities(items);
 
   const parsedTrip: ParsedTrip = {
     destination: parsed.destination ?? null,
@@ -264,9 +270,13 @@ function WorkspacePage() {
               startDate={trip.start_date}
               endDate={trip.end_date}
               partySize={trip.party_size ?? 2}
-              numDays={numDays}
+              staged={staged}
               autoBrowse={!isManualTrip}
               onAdd={(item) => handleAdd(item)}
+              onRemove={(id) => removeMut.mutate(id)}
+              onBuildItinerary={() =>
+                toast.info("AI itinerary building lands next — your activities are saved.")
+              }
             />
           )}
 

@@ -1,5 +1,53 @@
 # Wayfinder Changelog
 
+## v0.5.0 — 2026-08-16
+
+### Overview
+
+Activities stop scheduling themselves. Anything you add on the Activities tab now collects in a
+staging list on that tab instead of silently landing on Day 1 of your itinerary, so you can gather
+options without committing to when you'll do them. Browsing moved behind a button, giving the tab
+over to your own list, and a "Build out itinerary" action is in place for the AI scheduling that
+lands next.
+
+### Updates
+
+#### Bug Fixes
+
+**Adding an activity dropped it straight into the itinerary**
+
+- _Technical:_ Every add path sent a concrete `day_index` — the browse cards computed one from the
+  event date, and the manual form defaulted to `0` — and `ItineraryPanel` further coerced
+  `day_index ?? 0`, so even a null landed on Day 1. Activities now stage with `day_index: null`,
+  and the itinerary drops null-day rows rather than defaulting them. The discriminator is the null
+  day index rather than `category`, which activity rows already use for their own taxonomy; since
+  `trip_items.day_index` was already nullable this needed no migration. `committedItems()` filters
+  staged activities alongside lodging candidates, keeping one chokepoint for everything that totals
+  money or lists itinerary rows.
+- _For everyone:_ Adding an activity used to put it on the first day of your trip whether or not
+  that made any sense, and you'd have to drag it somewhere better. Now it goes into a list on the
+  Activities tab and your itinerary stays exactly as you left it.
+
+#### Changes
+
+**Activities tab leads with your own list**
+
+- _Technical:_ Added activities render in a table (name, category, date, location, cost, remove)
+  with no cap. The always-on browse section moved into a dialog opened on demand, so no
+  Places/Ticketmaster call fires until asked. A "Build out itinerary" button appears once at least
+  one activity is staged, wired to AI scheduling in the next release. The Trip Details task list
+  now counts activities whether staged or scheduled, so staging still satisfies "Add activities".
+- _For everyone:_ The tab now opens on what you've actually chosen rather than a wall of
+  suggestions. Browse when you want it, and once you've gathered a few things, "Build out
+  itinerary" will arrange them into days for you.
+
+#### Upcoming
+
+- AI itinerary building from your staged activities, then an itinerary chat that can edit the plan
+  directly, and a day-by-day map with routes.
+- Realtime sync for shared trips, change notifications, and an activity feed.
+- Replacement live hotel data source (TravelPayouts is discontinued).
+
 ## v0.4.0 — 2026-08-05
 
 ### Overview
