@@ -99,10 +99,26 @@ lands next.
   explaining why it might not work — a day that's become impossible to fit, a long detour, a
   timing clash. It stays quiet the rest of the time, and you can dismiss any note.
 
+#### Bug Fixes
+
+**Our Google API key was exposed in every Places photo URL**
+
+- _Technical:_ Photo URLs were built server-side as
+  `places.googleapis.com/v1/{name}/media?...&key={GOOGLE_API_KEY}` and returned to the client as an
+  `<img src>`, publishing the key to anyone who opened devtools — present since v0.1. Photos now go
+  through `/api/places/photo`, handled in `src/server.ts`, which calls Places with the key
+  server-side and streams the bytes back under a 24h immutable cache. The `name` parameter is
+  validated against the exact shape Places issues and anything else is rejected 400 — without that
+  the route would be an open relay for calls authenticated with our key. Only the producer changed;
+  every consumer already just rendered `photo_url`. IP-restricting the key remains unavailable
+  (Vercel egress IPs are dynamic without Secure Compute, so a restriction would break production),
+  so the API restriction and quota caps remain the controls.
+- _For everyone:_ Nothing looks different — photos load exactly as before. Behind the scenes our
+  Google key is no longer handed to every visitor's browser.
+
 #### Upcoming
 
 - A day-by-day itinerary map with routes.
-- Realtime sync for shared trips, change notifications, and an activity feed.
 - Realtime sync for shared trips, change notifications, and an activity feed.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 
