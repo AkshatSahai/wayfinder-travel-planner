@@ -253,6 +253,35 @@ than failing the build.
 The model returns a wall-clock `"HH:MM"`; `start_time` is a timestamp column, so it is only
 meaningful once combined with that day's real date — see `timestampFor` in `buildMut`.
 
+### The activity feed is append-only, and attribution is enforced by RLS
+
+`trip_activity` (migration `20260817000000`) backs the B3 change feed. Two deliberate properties:
+
+- **Append-only.** `authenticated` is granted only `SELECT, INSERT`, and there are no UPDATE or
+  DELETE policies. Rows disappear only through the trip's `ON DELETE CASCADE`. Don't add an UPDATE
+  policy to "fix" an entry — a feed you can rewrite isn't a record of anything.
+- **`actor_id` is pinned to `auth.uid()` in the INSERT policy.** Without that clause any trip member
+  could write entries attributed to a different collaborator, which would make the whole "who did
+  what" premise unverifiable. Verified: a forged `actor_id` is rejected with `42501`.
+
+Membership uses the existing `is_trip_member()` rather than a hand-rolled UNION over
+`trips`/`trip_collaborators`. A raw subquery against `trips` inside this policy would be evaluated
+under trips' own SELECT policy — the shape that produced both RLS bugs in §8.
+
+**GRANT is not optional and its absence is silent.** RLS decides which rows a role may touch; GRANT
+decides whether it may touch the table at all. Policies that look correct still fail every request
+with `permission denied for table` when the GRANT is missing.
+
+⚠️ **`supabase/config.toml` pins a dead project ref** (`mocvqmruxvpwgnxiszmc`) while the app uses
+`cxonflruhbypxfonjtes`. The config's ref doesn't resolve in DNS at all — almost certainly left from
+the original Lovable scaffold. Nothing writes to the wrong database because the name simply fails to
+resolve, but `supabase db push` will look broken for reasons unrelated to your schema. Migrations
+here are applied by hand in the SQL editor regardless.
+
+⚠️ **Re-running an old migration file is what "relation already exists" means.** The SQL editor runs
+a multi-statement script as one implicit transaction, so a failed batch rolls back entirely and
+leaves nothing half-applied — but check *which file* you pasted before debugging the SQL.
+
 ### Trip creation modes
 
 `parsed_params.entry_mode === "manual"` marks a manually-created trip. It drives:
@@ -494,15 +523,18 @@ Production has these keys, so the quickest check is the live site.
   `trips`/`trip_items` filtered by `trip_id`, call the existing `invalidate()` chokepoint in
   `trips.$tripId.tsx` from the event handler.
 
-  ⚠️ **It does need a schema change, contrary to the earlier note here.** Probed live on
-  2026-08-17: a channel on `trip_items` reports `SUBSCRIBED` and then delivers **zero** events for
-  INSERT, UPDATE or DELETE, because the table is not in the `supabase_realtime` publication. A
-  `SUBSCRIBED` status proves nothing on its own — always confirm with an actual write. Required
-  before any Phase 2 work, applied by hand in the SQL editor per the DDL constraint above:
-  `ALTER PUBLICATION supabase_realtime ADD TABLE public.trip_items, public.trips;` plus
-  `REPLICA IDENTITY FULL` on both so DELETE payloads carry the row's title (needed for "X removed
-  Y" notifications), and `supabase.realtime.setAuth()` on the client so RLS applies to the socket.
-  The service-role key was never the only blocker.
+  ✅ **The database side is done** (migration `20260817000000_realtime_and_activity_feed.sql`,
+  applied 2026-08-17). It *did* need a schema change, contrary to the earlier note here that said
+  otherwise: `trips`/`trip_items` were not in the `supabase_realtime` publication, so a channel
+  reported `SUBSCRIBED` and then delivered **zero** events forever. Now verified live — INSERT,
+  UPDATE and DELETE all arrive, plus INSERT on `trip_activity`. `REPLICA IDENTITY FULL` is what
+  makes the DELETE payload carry the row title for "X removed Y".
+
+  ⚠️ **`SUBSCRIBED` is not evidence.** Supabase reports it happily for a table that isn't in the
+  publication. Always confirm with an actual write; see `scratchpad/partb-verify.mjs` for the shape.
+
+  Still to build in the app: `supabase.realtime.setAuth(token)` before subscribing, or RLS-protected
+  `postgres_changes` deliver nothing.
 - **Presence indicator (Phase 3)** — "who's viewing this trip," ordered after Phase 2 since it
   needs the same realtime channel plumbing.
 - **Owner vs. shared badge** in `trips.index.tsx` — `listTrips` now also returns trips the user
