@@ -6,8 +6,9 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-16** (repo hygiene: LF normalization + prettier gate green;
-last feature release v0.4.0, verified end-to-end in production)
+Last updated: **2026-08-17** — after **v0.5.0** shipped to production: the activities/itinerary AI
+overhaul (A1–A5), the Places photo-proxy security fix, and live collaboration (B1–B3). B4 (presence)
+is the one piece of that spec not attempted.
 
 ---
 
@@ -495,6 +496,34 @@ not a code change to the existing trip/item server fns.
 
 ## 4. What shipped recently
 
+### v0.5.0 (activities/itinerary AI overhaul + live collaboration) — 2026-08-17
+
+Shipped as PRs #1–#9, all merged to `main` and deployed. Verified live in production: the photo
+proxy serves real bytes and the server key appears nowhere in the page.
+
+**Part A — activities and itinerary**
+1. **A1 — activities stage instead of scheduling themselves.** Adding an activity used to write it
+   onto Day 1. Now `day_index IS NULL` means staged; see §3.
+2. **A2 — "Build out itinerary".** Gemini schedules staged activities onto days, with Places
+   enrichment for anything missing a location. `updateTripItem` gained `details`; new
+   `updateTripItems` batch endpoint.
+3. **A3 — itinerary chat.** Returns *operations* (move/remove/add/swap_days/retime), not prose, and
+   every batch is undoable from its toast. The Activities tab became the master list.
+4. **A4 — drag advisor.** A local heuristic pass gates the AI call, so a benign drag costs nothing.
+5. **A5 — day tabs + per-day route map.** OSRM routes a day's stops from stored coordinates; notes
+   are split into **Live · Google** vs **Guidance**.
+6. **Security — Places photo proxy.** `GOOGLE_API_KEY` was embedded in every photo URL sent to the
+   browser, from v0.1 through v0.5.0. Now `/api/places/photo`; see §2.
+
+**Part B — live collaboration**
+7. **Migration** `20260817000000_realtime_and_activity_feed.sql` — publication, `REPLICA IDENTITY
+   FULL`, and the append-only `trip_activity` table.
+8. **B1–B3** — live sync, attributed toasts, activity feed. **B4 (presence) not attempted.**
+
+**Repo hygiene:** `.gitattributes` pins LF (a fresh Windows clone previously produced ~12,400
+phantom eslint errors), and `activities-panel.tsx` was reformatted so `npx eslint src/` passes on
+`main` again — it had been failing with 188 errors.
+
 ### v0.4.0 (sharing, Book button, activities manual+fetch) — verified end-to-end in production
 1. **Trip sharing, Phase 1.** Invite links, `trip_collaborators`/`trip_invites` tables,
    membership-based RLS. Refresh-to-see-changes only — no realtime, no presence (both deferred,
@@ -589,6 +618,34 @@ denied/wrong," a disposable `SECURITY INVOKER` SQL function that echoes back
 `auth.uid()`/`auth.role()` (or, cautiously, counts/lists what the caller can actually see) is
 far more useful than staring at the policy text — drop it once you're done.
 
+### Techniques that made v0.5.0's testing trustworthy
+
+**Count server-fn calls off the wire — and decode the id first.** TanStack Start posts to
+`/_serverFn/<base64url>` where the payload is JSON containing
+`"<fnName>_createServerFn_handler"`. Matching the *raw* URL for a function name finds nothing and
+silently reports **zero calls**, which turns "no AI call fired" into a vacuous pass. Decode the
+segment before matching. This is what proves claims like "a benign drag costs nothing".
+
+**Two accounts means two browser CONTEXTS.** `browser.createBrowserContext()` per user gives each
+its own storage; two tabs in one context share a session and prove nothing about per-user filtering.
+Required for anything about "excluding your own changes".
+
+**Poll for toasts, don't sleep past them.** Sonner auto-dismisses (6s here). A single sample taken
+after the window reports an empty list for a notification that did appear — an early B2 run "failed"
+this way. Accumulate `[data-sonner-toast]` text across the window instead.
+
+**A DB-polling helper can outrun the UI.** Test helpers that wait on the database return as soon as
+the row changes — which happens *before* the mutation resolves and the toast renders. Waiting for
+the button/toast, not the data, is what fixed the A3 undo test.
+
+**Prefix-matching `data-testid` is a trap.** `[data-testid^="itinerary-day-"]` also matched the day
+side panel, reporting a phantom second day column. Match exactly (`/^itinerary-day-\d+$/`) or give
+the sibling a different prefix.
+
+**Assert the honest expectation, not the hoped-for one.** The day map legitimately renders a
+fallback locally (referrer allowlist), and a non-member legitimately never renders the workspace at
+all — so waiting on `trip-meta-bar` for them is the wrong assertion. Its *absence* is the pass.
+
 ---
 
 ## 6. Known gaps — verified vs not
@@ -603,12 +660,32 @@ collaborator's added item becoming visible to the owner (confirms RLS write acce
 UI), Lodging Book button, Activities manual-add, Activities URL-fetch prefill (tested against a
 real Wikipedia page, correctly pulled the `og:title`-derived page title).
 
+**Verified against live Supabase / Gemini / Places / OSRM + real browser (v0.5.0):**
+- **A1** 22 assertions — itinerary unchanged on add, 51 staged rows uncapped, drag still persists.
+- **A2** 17 — every activity scheduled, pinned dates honoured, a location-less activity looked up
+  and persisted, zero `(day, sort_order)` collisions on an incremental rebuild.
+- **A3** 19 — fuzzy-name resolution, day swap in both directions, undo restores a removed row, an
+  ambiguous request moves nothing.
+- **A4** 11 — **advisor calls counted off the wire**: 5 benign drags → 0 calls; an overloaded day →
+  exactly 1.
+- **A5** 12 — one day column instead of four stacked, real drive estimate, Live/Guidance badges,
+  0 extra AI calls across 6 tab re-visits.
+- **Photo proxy** 11 — 7/7 hostile `name` inputs rejected 400; the key absent from 54 images, 211
+  requests and 300KB of HTML, with a control assertion proving the scan wasn't matching nothing.
+- **Part B migration** 8 — realtime delivers INSERT/UPDATE/DELETE (previously 0 events); a forged
+  `actor_id` rejected `42501`; a non-member reads 0 rows.
+- **B1–B3** 13, **two real accounts in two isolated browser contexts** — collaborator's change
+  reaches the owner with no reload, the owner gets **zero** attributed toasts for their own edit,
+  one multi-row drag logs exactly **one** activity entry.
+
 **Never exercised — needs keys that aren't in local `.env`:**
 - **Flight** travel estimates (Duffel). Car and train are confirmed working.
-- Google Places **autocomplete suggestions** and the Places geocode path. Only the keyless
-  Nominatim fallback has actually run.
-- Live maps — locally they render "Map isn't connected yet".
+- Google Places **autocomplete suggestions** in the browser (the server-side Places *search* and
+  *geocode* paths are now well exercised by A2/A5).
 - Ticketmaster events and EIA gas prices.
+- **Live maps locally** — but for a different reason than before: the key works, `localhost:8080`
+  simply isn't on its referrer allowlist, so the map shows its "key was rejected" fallback. Maps do
+  render in production.
 
 Production has these keys, so the quickest check is the live site.
 
@@ -621,24 +698,14 @@ Production has these keys, so the quickest check is the live site.
   The panel correctly reports unavailable. A replacement live hotel source is the top item.
 
 **Requested but not built**
-- **Realtime sync for shared trips (Phase 2)** — subscribe to Supabase `postgres_changes` on
-  `trips`/`trip_items` filtered by `trip_id`, call the existing `invalidate()` chokepoint in
-  `trips.$tripId.tsx` from the event handler.
-
-  ✅ **The database side is done** (migration `20260817000000_realtime_and_activity_feed.sql`,
-  applied 2026-08-17). It *did* need a schema change, contrary to the earlier note here that said
-  otherwise: `trips`/`trip_items` were not in the `supabase_realtime` publication, so a channel
-  reported `SUBSCRIBED` and then delivered **zero** events forever. Now verified live — INSERT,
-  UPDATE and DELETE all arrive, plus INSERT on `trip_activity`. `REPLICA IDENTITY FULL` is what
-  makes the DELETE payload carry the row title for "X removed Y".
-
-  ⚠️ **`SUBSCRIBED` is not evidence.** Supabase reports it happily for a table that isn't in the
-  publication. Always confirm with an actual write; see `scratchpad/partb-verify.mjs` for the shape.
-
-  Still to build in the app: `supabase.realtime.setAuth(token)` before subscribing, or RLS-protected
-  `postgres_changes` deliver nothing.
-- **Presence indicator (Phase 3)** — "who's viewing this trip," ordered after Phase 2 since it
-  needs the same realtime channel plumbing.
+- ~~**Realtime sync for shared trips (Phase 2)**~~ — **shipped in v0.5.0 (B1–B3)**: live sync,
+  attributed change notifications, and the activity feed. Migration
+  `20260817000000_realtime_and_activity_feed.sql` applied 2026-08-17; see §3 for the two-channel
+  design and the three silent-failure guards.
+- **Presence indicator (B4 / Phase 3)** — "who's viewing this trip," via `realtime.presence` on the
+  channel `useTripRealtime` already opens. **Not attempted** in v0.5.0; B1–B3 was the scoped
+  deliverable. The plumbing it needs now exists, so this is a small addition rather than a new
+  system.
 - **Owner vs. shared badge** in `trips.index.tsx` — `listTrips` now also returns trips the user
   collaborates on (as of v0.4.0's RLS rewrite), but the list doesn't select `user_id` so there's
   no visual distinction yet.
@@ -648,11 +715,16 @@ Production has these keys, so the quickest check is the live site.
 - No live rail API. Train estimates are a labelled heuristic: road miles ÷ 50 mph + 1h.
 
 **Worth considering**
-- `updateTripItem` is called once per row on a drag reorder (N requests). Fine at current sizes;
-  a batch endpoint would be better if itineraries get long.
+- ~~`updateTripItem` once per row on a drag reorder~~ — **done in v0.5.0**: `updateTripItems` applies
+  a whole batch in one request, and `reorderMut` uses it. That also made one drag log one activity
+  entry instead of N.
 - Migrate all server fns off the deprecated `.inputValidator()` in one pass.
-- The Lodging map and Trip Details map both mount their own `APIProvider`. Harmless, but a shared
-  provider higher in the tree would be cleaner.
+- The Lodging map, Trip Details map and the new itinerary day map each mount their own
+  `APIProvider`. Harmless, but a shared provider higher in the tree would be cleaner — now three
+  call sites rather than two.
+- **Proxy-cache the Places photos.** `/api/places/photo` sets a 24h immutable `Cache-Control`, so
+  browsers and the CDN cache it, but every cold miss still costs a Places photo request. If imagery
+  volume grows, cache the bytes rather than only the response.
 
 **Housekeeping**
 - **`npm audit` reports 4 transitive advisories** (2026-08-16): `brace-expansion`, `js-yaml`,
@@ -665,11 +737,15 @@ Production has these keys, so the quickest check is the live site.
   (3 from v0.4.0, 7 from v0.5.0) deleted via `auth/v1/admin/users` with the service-role key, which
   is now in `.env`. Zero `claude-*` accounts remain. Future test users can be scripted away the
   same way rather than accumulating.
-- Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
-  and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
-  needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going
-  forward) — remove them from the dashboard (Authentication → Users), or ask for it to be done
-  via `supabaseAdmin.auth.admin.deleteUser()`. All of their trip data has been cleaned up.
+- **`src/integrations/supabase/types.ts` now carries THREE hand-added tables** —
+  `trip_collaborators`, `trip_invites` (v0.4.0) and `trip_activity` (v0.5.0) — each marked inline.
+  The file header says "do not edit directly". Worth one `supabase gen types typescript` pass to
+  retire all three at once. ⚠️ `supabase/config.toml` pins a **dead** project ref
+  (`mocvqmruxvpwgnxiszmc`, no DNS) while the app uses `cxonflruhbypxfonjtes`, so fix that first or
+  the CLI will appear broken for unrelated reasons.
+- **`http://localhost:8080` is not on the Maps browser key's referrer allowlist**, so the itinerary
+  day map falls back to "Map key was rejected" in local dev while working in production. One line
+  in the Cloud Console fixes it.
 
 ---
 
@@ -765,13 +841,89 @@ now matches exactly what's live in Supabase.
 
 ---
 
-## 9. Working agreements
+## 9. What broke during v0.5.0, and why (2026-08-16 → 17)
+
+Every one of these passed the static gates and looked fine; each was caught only by an assertion
+against real state. Recorded so the *class* of mistake is recognisable, not just the instance.
+
+1. **The AI planner's `sort_order` collided with rows already on the day.** `buildItinerary` is only
+   given *staged* activities, so it numbers from 0 — landing on top of the booked stay at day 0 #0.
+   Invisible on a first build (nothing is there yet); surfaced only by adding activities to an
+   *already-built* itinerary. **Lesson: test the second run, not just the first.**
+   → `renumberDay()`, now shared by every path that places rows on a day.
+
+2. **The itinerary chat repeated it for newly-added rows.** They are created *after* the items
+   snapshot, so they were absent from the renumbering set and kept a placeholder position. Same bug,
+   new entry point — which is why the fix became a shared helper rather than a local patch.
+
+3. **`swap_days` initially moved only activities**, stranding the booked stay on the wrong day.
+   Day-level operations must move *every* kind, not just the one you were thinking about.
+
+4. **The drag advisor read pre-drag state.** It ran off the React Query cache, which still held the
+   old arrangement, so the moved item was not yet on its target day and every heuristic returned
+   nothing. The feature looked fully wired up and did nothing at all. → project the `moves` array
+   over current items instead of waiting for a refetch.
+
+5. **Drops onto day tabs landed one day off.** `closestCorners` compares the *dragged row's*
+   rectangle, and a full-width itinerary row overlaps the neighbouring tab even with the pointer
+   dead-centre. → `pointerWithin` first, `closestCorners` only as fallback. Reproducible, not flake.
+
+6. **Two droppables shared one id.** The selected day renders both a tab and a column, both
+   registered as `day-N`; dnd-kit's registry broke and tab drops silently did nothing.
+   → `daytab-` namespace.
+
+7. **`eslint` was already failing on `main`** — 188 prettier errors in `activities-panel.tsx` from a
+   v0.4.0 commit that skipped `prettier --write`. The repo's own documented pre-commit gate did not
+   pass before this release.
+
+8. **A fresh Windows clone produced ~12,400 phantom eslint errors** (`Delete ␍`), because Git for
+   Windows defaults `core.autocrlf=true` and the repo had no `.gitattributes`. Reads as catastrophic
+   breakage; the code was fine. → LF pinned in `.gitattributes`.
+
+9. **The first Part B migration would have failed four more times** after the reported
+   `owner_id` error — missing GRANTs, a missing `ON DELETE`, an unpinned `actor_id`, and a
+   hand-rolled membership UNION. Fixed in one pass rather than one round each; see §3.
+
+**And three test bugs that masqueraded as product bugs**, worth equal attention because each nearly
+produced a false report: a URL-prefill assertion against a page that serves no `og:description`; a
+"0 advisor calls" pass that was counting nothing, because the server-fn id is base64url-encoded; and
+a toast assertion that sampled after the toast had auto-dismissed. Techniques in §5.
+
+---
+
+## 10. Working agreements
 
 - **Don't commit or push unless asked.** Verify first — the user has been explicit about
   testing before any commit.
-- Pushing to `main` triggers a production deploy **and** syncs to Lovable. Confirm before pushing
-  unless already told to.
+- **Branch for every change; ask before `main`.** Pushing to `main` triggers a production deploy
+  **and** syncs to Lovable, so it is a release, not a save point. Feature branches get their own
+  Vercel preview.
 - Log every user-facing change in `CHANGELOG.md` using the existing format: an Overview, then
   entries with both a `_Technical:_` and a `_For everyone:_` line.
 - When a spec's premise doesn't match the code, say so and build to the underlying intent rather
-  than silently following or silently ignoring it.
+  than silently following or silently ignoring it. v0.5.0 hit this three times — "popular times"
+  don't exist in any Places API tier, IP-restricting a key is impossible on Vercel's dynamic egress,
+  and `trip_items` payloads can't attribute a change. Each was reported and built around rather than
+  faked.
+
+### Evidence standards that have earned their keep
+
+- **Verify against real state, not the UI's appearance.** Assert on the database, on decoded network
+  requests, on counted events. "It looked right" has hidden a real bug here more than once.
+- **A green status is not a result.** `SUBSCRIBED` is reported for tables that deliver nothing;
+  "the SQL ran without error" says nothing about RLS behaviour; "no note appeared" doesn't mean no
+  call was made. Confirm with an actual write, an actual read, an actual count.
+- **Include a control assertion when proving an absence.** The photo-proxy leak check also asserts
+  the *browser* key IS findable — otherwise "0 leaks" could just mean the search was broken.
+- **Two accounts means two browser contexts.** Anything about per-user behaviour is unprovable with
+  one session in two tabs.
+- **Suspect the test first when something "fails".** Of the failures in v0.5.0, roughly a third were
+  bad assertions rather than bad code — see §9.
+
+### Merging a stack of PRs
+
+Merging one PR does **not** retarget the next one to `main`; it keeps pointing at a now-merged
+branch, and merging it there ships nothing. Retarget each PR (`gh pr edit N --base main`) before
+merging it, and re-check `mergeable` after every merge. Expect a `context.md` conflict when two
+branches both documented the same area — it is usually two versions of the same paragraph, and the
+newer one wins.
