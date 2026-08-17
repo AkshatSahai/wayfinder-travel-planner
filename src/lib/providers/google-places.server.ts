@@ -116,18 +116,25 @@ async function searchTextCategory(
     throw new Error(`places search failed (${res.status}): ${text.slice(0, 200)}`);
   }
   const json = (await res.json()) as { places?: Place[] };
-  return (json.places ?? []).map((p) => mapPlace(p, category, apiKey));
+  return (json.places ?? []).map((p) => mapPlace(p, category));
 }
 
-function mapPlace(p: Place, category: ActivityCategory, apiKey: string) {
+/**
+ * Photo URL pointing at our own proxy (`src/server.ts`) rather than at Places
+ * directly. The direct form required embedding GOOGLE_API_KEY in a URL that ends
+ * up as an <img src> in the browser, which published the key to every visitor.
+ * Never reintroduce `...media?key=${apiKey}` in anything client-facing.
+ */
+function photoProxyUrl(photoName: string | undefined, width: number): string | null {
+  return photoName ? `/api/places/photo?name=${encodeURIComponent(photoName)}&w=${width}` : null;
+}
+
+function mapPlace(p: Place, category: ActivityCategory) {
   const priceCents = p.priceLevel ? (PRICE_LEVEL_CENTS[p.priceLevel] ?? 2500) : 2500;
   const desc =
     p.editorialSummary?.text ??
     `${p.primaryTypeDisplayName?.text ?? category} · ${p.formattedAddress ?? ""}`.trim();
-  const photoName = p.photos?.[0]?.name;
-  const photo_url = photoName
-    ? `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=800&key=${apiKey}`
-    : null;
+  const photo_url = photoProxyUrl(p.photos?.[0]?.name, 800);
   return {
     name: p.displayName?.text ?? "Unknown",
     category,
@@ -237,7 +244,6 @@ export async function searchTopSights(destination: string): Promise<TopSight[]> 
   }
   const json = (await res.json()) as { places?: Place[] };
   return (json.places ?? []).map((p) => {
-    const photoName = p.photos?.[0]?.name;
     return {
       name: p.displayName?.text ?? "Unknown",
       description:
@@ -245,9 +251,7 @@ export async function searchTopSights(destination: string): Promise<TopSight[]> 
         `${p.primaryTypeDisplayName?.text ?? "Attraction"} · ${p.formattedAddress ?? ""}`.trim(),
       rating: p.rating ?? null,
       review_count: p.userRatingCount ?? null,
-      photo_url: photoName
-        ? `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=640&key=${apiKey}`
-        : null,
+      photo_url: photoProxyUrl(p.photos?.[0]?.name, 640),
       maps_url: p.googleMapsUri ?? null,
       lat: p.location?.latitude ?? null,
       lng: p.location?.longitude ?? null,

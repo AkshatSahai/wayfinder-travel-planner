@@ -59,6 +59,33 @@ this bites every time:
 Set **all four** locally or the app renders but every server function 401s and the workspace
 throws `notFound()` (a confusing 404 with no obvious cause).
 
+### Places photos go through our own proxy — never embed the key in a URL
+
+`GOOGLE_API_KEY` must never appear in anything the browser sees. Places photo URLs are built by
+`photoProxyUrl()` in `google-places.server.ts` and point at **`/api/places/photo`**, handled in
+`src/server.ts`; that handler calls Places with the key server-side and streams the bytes back.
+
+⚠️ **Never reintroduce `https://places.googleapis.com/v1/{name}/media?...&key=${apiKey}`.** That
+form was returned to the client as an `<img src>`, publishing the key to every visitor from v0.1
+through v0.5.0. Consumers only ever render `photo_url`, so the fix lives entirely in the producer —
+if you add a new Places-backed image, use `photoProxyUrl()`.
+
+⚠️ **The `name` parameter is security-critical.** It is interpolated into a URL we sign with our
+key, so it is validated against `^places/[A-Za-z0-9_-]+/photos/[A-Za-z0-9_-]+$` and anything else
+is rejected with 400. Without that check the route is an **open relay** — anyone could point it at
+another Google endpoint and have us authenticate the call for them. Traversal, absolute-URL,
+endpoint-swap and query-injection inputs are all covered by the probe suite.
+
+The proxy lives in `server.ts` rather than a route file because this TanStack Start version ships
+**no server-route API** (no `createServerFileRoute`/`ServerRoute` export), and a server function
+cannot stream raw image bytes.
+
+**IP-restricting `GOOGLE_API_KEY` is not available — don't retry it.** Vercel's docs state
+deployments "can come from any IP address" by default; static egress needs Secure Compute or the
+Static IPs add-on (Enterprise). An IP restriction would break production on the next deploy. The
+proxy removes the exposure, which was the real risk; the remaining controls are the existing API
+restriction (Places New + Geocoding only) plus per-API quota caps and a billing alert.
+
 **`VITE_GOOGLE_MAPS_KEY` is referrer-restricted (verified live, 2026-08-17).** Google reports
 `REQUEST_DENIED — "API keys with referer restrictions cannot be used with this API"` on server-side
 REST calls, and Static Maps returns **403** for a disallowed origin while allowing
