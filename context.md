@@ -124,6 +124,36 @@ Supabase migrations here are applied by the Lovable/Supabase pipeline. Reusing t
 their own taxonomy (Food, Nature, …) — that's fine, because `isLodgingCandidate()` checks
 `kind === "lodging"` too.
 
+### Activities: "staged" vs scheduled — a null `day_index`
+
+The activity-side counterpart of lodging's candidate/booked split (above), added in v0.5.0.
+
+- **Staged** — `kind: "activity"` with **`day_index IS NULL`**. Lives in the Activities tab's list
+  only. Not on the itinerary, not counted in the budget.
+- **Scheduled** — any non-null `day_index`. On the itinerary, counts as spend.
+
+**Why a null `day_index` and not a `category` value:** activity rows already use `category` for
+their own taxonomy (Food, Nature, …), so the lodging trick genuinely can't be reused here.
+`trip_items.day_index` was already nullable, so "no day" already meant "not on the itinerary" —
+this needed **no migration**.
+
+`committedItems()` in `src/lib/workspace-store.ts` filters staged activities alongside lodging
+candidates, so it remains the single chokepoint for anything that totals money or lists itinerary
+rows. `stagedActivities()` is its inverse for the Activities tab.
+
+⚠️ **Do not reintroduce a `day_index ?? 0` fallback.** `ItineraryPanel` used to coerce a null day
+to Day 0, which is precisely what dumped every freshly-added activity onto Day 1. Rows without a
+day are now dropped from the itinerary, not defaulted.
+
+**Budget decision:** staged activities are excluded from the budget total, mirroring lodging
+candidates — added-but-unscheduled is not yet spend. This was a judgement call, not a spec
+requirement; the spec only required that the *itinerary* not change. Flipping it is one line in
+`committedItems()`.
+
+**Derived state that must count both:** the Trip Details "Add activities" task counts activities
+regardless of scheduling state. Routing it through `committedItems()` made staging ten activities
+still show the task as outstanding.
+
 ### Trip creation modes
 
 `parsed_params.entry_mode === "manual"` marks a manually-created trip. It drives:
@@ -388,6 +418,8 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
+- Test user `claude-a1-verify-a1run1@example.com` (v0.5.0 A1 verification) still exists in Supabase
+  auth. Its trip and all items were deleted; only the auth row remains.
 - Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
   and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
   needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going

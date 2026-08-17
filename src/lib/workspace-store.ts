@@ -42,7 +42,7 @@ export function daysBetween(a?: string | null, b?: string | null): number {
 export const LODGING_CANDIDATE = "candidate";
 export const LODGING_BOOKED = "booked";
 
-type ItemLike = { kind: string; category?: string | null };
+type ItemLike = { kind: string; category?: string | null; day_index?: number | null };
 
 export function isLodgingCandidate(item: ItemLike): boolean {
   return item.kind === "lodging" && item.category === LODGING_CANDIDATE;
@@ -52,9 +52,27 @@ export function isBookedLodging(item: ItemLike): boolean {
   return item.kind === "lodging" && item.category !== LODGING_CANDIDATE;
 }
 
+// -------- Activities: staged vs scheduled --------
+// The activity-side counterpart of lodging's candidate/booked split. Activities
+// added on the Activities tab are *staged*: collected in that tab's list but
+// deliberately not placed on any day until "Build out itinerary" schedules them.
+//
+// The discriminator is a NULL `day_index`, not `category` — activity rows already
+// use `category` for their own taxonomy (Food, Nature, …), so the lodging trick
+// can't be reused here. `trip_items.day_index` was already nullable, so this
+// needs no migration: "no day" literally means "not on the itinerary".
+export function isStagedActivity(item: ItemLike): boolean {
+  return item.kind === "activity" && item.day_index == null;
+}
+
 /** Everything that actually counts — itinerary rows and budget spend. */
 export function committedItems<T extends ItemLike>(items: T[]): T[] {
-  return items.filter((i) => !isLodgingCandidate(i));
+  return items.filter((i) => !isLodgingCandidate(i) && !isStagedActivity(i));
+}
+
+/** The Activities tab's staging list: added, not yet scheduled. */
+export function stagedActivities<T extends ItemLike>(items: T[]): T[] {
+  return items.filter(isStagedActivity);
 }
 
 // -------- Geo --------
