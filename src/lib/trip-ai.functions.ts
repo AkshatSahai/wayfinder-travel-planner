@@ -2,6 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { APICallError, generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import { createGateway, CHAT_MODEL } from "./ai-gateway.server";
+import { clusterByDistance } from "./geo-cluster";
+import type { NearbyPlace } from "./providers/google-places.server";
 
 // -------- Schemas --------
 const parsedTripSchema = z.object({
@@ -549,12 +551,24 @@ export const buildItinerary = createServerFn({ method: "POST" })
     });
 
     // ---- Phase 2: sequence ----
+    // Real distance, computed once, handed to the model as a fact rather than
+    // left for it to infer from raw coordinates in a text prompt — that
+    // inference step was exactly what let real-world clusters (several stops
+    // a few minutes apart) get split across different days.
+    const clusters = clusterByDistance(
+      enriched.map((a) => ({
+        id: a.id,
+        coords: a.lat != null && a.lng != null ? { lat: a.lat, lng: a.lng } : null,
+      })),
+    );
+
     const lines = enriched
       .map(
         (a) =>
           `- id=${a.id} | "${a.title}" | ${a.category ?? "Activity"} | $${(a.cost_cents / 100).toFixed(0)}` +
           ` | ${a.location ?? "location unknown"}` +
           (a.lat != null ? ` | coords ${a.lat.toFixed(4)},${a.lng?.toFixed(4)}` : "") +
+          (clusters.has(a.id) ? ` | cluster C${clusters.get(a.id)}` : "") +
           (a.duration_hours ? ` | ~${a.duration_hours}h` : "") +
           (a.preferred_date ? ` | traveler asked for ${a.preferred_date}` : ""),
       )
@@ -565,7 +579,8 @@ export const buildItinerary = createServerFn({ method: "POST" })
 
 Rules:
 - Assign EVERY activity to a day. day_index is 0-based (0 = first day) and must be between 0 and ${data.num_days - 1}. Never drop an activity.
-- Group activities that are geographically close on the SAME day — minimize driving between stops within a day. Use the coordinates where given.
+- "cluster CN" is a MEASURED fact, not a suggestion: activities sharing a cluster are confirmed close together in real life (walking/short-drive distance). Keep every activity in the same cluster on the same day unless a stronger constraint forces otherwise (a conflicting "traveler asked for" date, or the day is already full) — do not split a cluster just to even out day sizes.
+- Activities with no cluster (no coordinates available) or in different clusters: group by geography as best you can from the location text, minimizing driving between stops within a day.
 - Order within a day with sort_order (0-based) so the sequence makes practical sense: meals at meal times, outdoor/nature earlier, nightlife last.
 - Respect any "traveler asked for <date>" preference: map that date to its day_index and keep it there.
 - Pace realistically: roughly 2-4 activities per day, and don't stack a day past ~10 hours of activity time.
@@ -843,14 +858,140 @@ const chatItinerarySchema = z.object({
 export type ItineraryOp = z.infer<typeof itineraryOpSchema>;
 
 /**
- * Conversational itinerary editing. Returns *operations* rather than prose the
- * caller has to interpret, so the plan is changed deterministically and the
- * confirmation shown to the traveler describes what actually happened.
+ * The actual schema used for the routing call — a superset of the public
+ * `chatItinerarySchema`. Kept internal (not exported) so callers still only
+ * ever see `{reply, operations}` plus the existing `enrichments`/`dropped`
+ * fields; `intent`/`research_query`/`day_index_hint` only drive server-side
+ * branching between edit / research / clarify below.
+ */
+const chatRoutedSchema = z.object({
+  intent: z.enum(["edit", "research", "clarify"]),
+  reply: z.string(),
+  operations: z.array(itineraryOpSchema),
+  // research only — a short Places-searchable query, e.g. "restaurants" or
+  // "coffee shops", and which day it's about (null = the trip/destination
+  // generally, not one specific day).
+  research_query: z.string().nullable(),
+  day_index_hint: z.number().int().nullable(),
+});
+
+type ChatItineraryItem = {
+  id: string;
+  kind: string;
+  title: string;
+  day_index: number | null;
+  sort_order: number;
+  cost_cents: number;
+  location: string | null;
+  start_time: string | null;
+  lat: number | null;
+  lng: number | null;
+};
+
+/**
+ * Answers a research-intent chat turn ("what are good restaurants near day
+ * 2's stops?") by actually searching Places rather than letting the model
+ * answer from general knowledge — the same "fetch real data first, then
+ * reason over it" pattern used everywhere else in this file (enrichment in
+ * buildItinerary/chatItinerary's `add` handling, verifyCandidates, etc.),
+ * just applied to an open-ended question instead of a single lookup.
+ */
+async function answerItineraryResearch(
+  data: { destination: string; items: ChatItineraryItem[] },
+  researchQuery: string | null,
+  dayIndexHint: number | null,
+): Promise<string> {
+  const query = researchQuery?.trim() || "things to do";
+
+  // Center the search on the referenced day's actual stops when we have
+  // coordinates for them; otherwise fall back to geocoding the destination.
+  const dayStops =
+    dayIndexHint != null ? data.items.filter((i) => i.day_index === dayIndexHint) : [];
+  const located = dayStops.filter((i) => i.lat != null && i.lng != null);
+  let center: { lat: number; lng: number } | null =
+    located.length > 0
+      ? {
+          lat: located.reduce((s, i) => s + i.lat!, 0) / located.length,
+          lng: located.reduce((s, i) => s + i.lng!, 0) / located.length,
+        }
+      : null;
+
+  let places: NearbyPlace[];
+  try {
+    const { searchNearby, geocode } = await import("./providers/google-places.server");
+    if (!center) {
+      const apiKey = process.env.GOOGLE_API_KEY;
+      if (!apiKey) throw new Error("GOOGLE_API_KEY missing");
+      center = await geocode(data.destination, apiKey);
+    }
+    places = await searchNearby(`${query} in ${data.destination}`, center, 4000, 8);
+  } catch (err) {
+    console.error("[chat-itinerary] research search unavailable:", err);
+    return "I couldn't look that up right now — place search is unavailable. Try again in a moment.";
+  }
+
+  if (places.length === 0) {
+    return `I couldn't find any real ${query} results for that — try rephrasing, or naming the area more specifically.`;
+  }
+
+  const dayContext =
+    dayStops.length > 0
+      ? `Day ${dayIndexHint! + 1}'s current stops, in order:\n` +
+        dayStops
+          .sort((a, b) => a.sort_order - b.sort_order)
+          .map((s) => `- ${s.title}${s.location ? ` (${s.location})` : ""}`)
+          .join("\n")
+      : `No specific day was implicated — this is a general search around ${data.destination}.`;
+
+  const resultLines = places
+    .map(
+      (p, i) =>
+        `${i + 1}. ${p.name}` +
+        (p.rating != null
+          ? ` — rated ${p.rating}${p.review_count ? ` (${p.review_count} reviews)` : ""}`
+          : "") +
+        (p.address ? ` — ${p.address}` : "") +
+        (p.description ? ` — ${p.description}` : ""),
+    )
+    .join("\n");
+
+  const answer = await generateStructured(
+    `A traveler asked about "${query}" for their trip to ${data.destination}.
+
+${dayContext}
+
+Real search results (use ONLY these — do not invent or add any other place):
+${resultLines}
+
+Write a short, helpful reply (3-5 sentences or a short list) recommending 2-4 of these, explaining
+WHY each fits — proximity to their existing stops, what it's good for, rating if notable — not just
+listing them. Use the real names exactly as given. If none of them genuinely fit well, say so plainly
+rather than forcing a recommendation.`,
+    z.object({ reply: z.string() }),
+    "You are a concise, honest local guide. Only reference the places you were given. JSON only.",
+  );
+
+  return (
+    answer?.reply?.trim() ||
+    `Here's what I found for ${query} near ${data.destination}:\n${resultLines}`
+  );
+}
+
+/**
+ * Conversational itinerary editing AND research. Returns *operations* for
+ * edits rather than prose the caller has to interpret, so the plan is changed
+ * deterministically and the confirmation shown to the traveler describes what
+ * actually happened. Research turns return `operations: []` and put the
+ * answer in `reply` — the caller already treats an empty-operations response
+ * as "nothing to apply, just show the reply," so no response-shape change was
+ * needed to add research support.
  *
  * As with buildItinerary, the model is not trusted: operations naming an
  * unknown row are dropped, day indices are clamped to the trip's length, and
  * the number of operations per turn is capped so a single message can't rewrite
- * the whole trip.
+ * the whole trip. Research answers are grounded in a real Places search
+ * (`searchNearby`) rather than the model's own general knowledge — see the
+ * research branch below.
  */
 export const chatItinerary = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
@@ -873,6 +1014,8 @@ export const chatItinerary = createServerFn({ method: "POST" })
               cost_cents: z.number().int(),
               location: z.string().nullable(),
               start_time: z.string().nullable(),
+              lat: z.number().nullable(),
+              lng: z.number().nullable(),
             }),
           )
           .max(200),
@@ -896,27 +1039,36 @@ export const chatItinerary = createServerFn({ method: "POST" })
       .join("\n");
 
     const result = await generateStructured(
-      `You are editing a traveler's itinerary for ${data.destination} through conversation.
+      `You are helping a traveler with their itinerary for ${data.destination} through conversation.
+Their latest message is either an EDIT request (change the plan), a RESEARCH question (help them
+decide something, e.g. "what are good restaurants near day 2?"), or too ambiguous to act on yet.
 
-Respond to their latest message with a short "reply" (1-2 sentences, plain English, past tense —
-describe what you changed) and the "operations" that carry it out.
+Set "intent" to exactly one of:
+- "edit": they want the plan changed. Fill "operations" (below) and "reply" (1-2 sentences, past
+  tense, describing what you changed). Leave research_query/day_index_hint null.
+- "research": an open-ended question you should look up real options for, not answer from general
+  knowledge. Set "research_query" to a short, Places-searchable phrase (e.g. "restaurants", "coffee
+  shops", "family activities") and "day_index_hint" to the day it's about (0-based) if one is
+  clearly implied, else null for "somewhere in ${data.destination}" generally. Leave "reply" as a
+  short placeholder — it gets replaced with a grounded answer server-side. Leave "operations" empty.
+- "clarify": you cannot confidently tell what they want changed, or what day/place a research
+  question refers to. Set "reply" to a short clarifying question. Leave operations empty and
+  research_query null. Never guess at a removal or at which day a research question means.
 
-Operation types — set unused fields to null:
+Operation types for "edit" — set unused fields to null:
 - move:      id, day_index (0-based), sort_order (0-based position within that day)
 - remove:    id
 - add:       title, category, cost_cents, location, day_index (null = add without scheduling it)
 - swap_days: day_a, day_b (exchanges everything between the two days)
 
-You cannot set or change an item's clock time — travelers pin a specific arrival time
-themselves, from the item directly, if they want one. Sequencing is by position (sort_order),
-not time.
+You cannot set or change an item's clock time via an edit operation — travelers pin a specific
+arrival time themselves, from the item directly, if they want one. Sequencing is by position
+(sort_order), not time.
 
 Rules:
 - Days are 0-based internally but the traveler counts from 1. "day 2" means day_index 1.
 - Resolve names the traveler uses ("the candy factory", "the museum") to the matching id from the
   plan below. Match on meaning, not position.
-- If you cannot confidently identify what they mean, return NO operations and ask which one they
-  meant in the reply. Never guess at a removal.
 - Only include operations that are actually needed. An unchanged item needs no operation.
 - day_index must be between 0 and ${data.num_days - 1}.
 - category for an added activity should be one of: Food, Nature, Activity, Relaxation, Nightlife,
@@ -930,21 +1082,35 @@ ${plan || "(nothing scheduled yet)"}
 
 Conversation:
 ${transcript}`,
-      chatItinerarySchema,
-      "You are a precise itinerary editor. Return JSON only. Prefer doing nothing over doing the wrong thing.",
+      chatRoutedSchema,
+      "You are a precise, honest itinerary editor and research assistant. Return JSON only. Prefer doing nothing (or asking) over guessing wrong.",
     );
 
+    const empty = {
+      operations: [] as ItineraryOp[],
+      enrichments: [] as {
+        title: string;
+        location: string | null;
+        coords: { lat: number; lng: number } | null;
+      }[],
+      dropped: 0,
+    };
+
     if (!result) {
-      return {
-        reply: "Sorry — I couldn't process that. Try rephrasing?",
-        operations: [] as ItineraryOp[],
-        enrichments: [] as {
-          title: string;
-          location: string | null;
-          coords: { lat: number; lng: number } | null;
-        }[],
-        dropped: 0,
-      };
+      return { reply: "Sorry — I couldn't process that. Try rephrasing?", ...empty };
+    }
+
+    if (result.intent === "clarify") {
+      return { reply: result.reply, ...empty };
+    }
+
+    if (result.intent === "research") {
+      const reply = await answerItineraryResearch(
+        data,
+        result.research_query,
+        result.day_index_hint,
+      );
+      return { reply, ...empty };
     }
 
     const known = new Map(data.items.map((i) => [i.id, i]));

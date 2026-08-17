@@ -538,6 +538,7 @@ function WorkspacePage() {
             .filter((i) => !isLodgingCandidate(i))
             .map((i) => {
               const d = (i.details ?? {}) as Record<string, unknown>;
+              const coords = (d.coords ?? null) as LatLng | null;
               return {
                 id: i.id,
                 kind: i.kind,
@@ -547,6 +548,8 @@ function WorkspacePage() {
                 cost_cents: i.cost_cents ?? 0,
                 location: (d.location as string) ?? null,
                 start_time: i.start_time,
+                lat: coords?.lat ?? null,
+                lng: coords?.lng ?? null,
               };
             }),
         },
@@ -623,6 +626,22 @@ function WorkspacePage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  /**
+   * "Remove from itinerary" for an activity: unschedule it (day_index -> null)
+   * rather than delete it, so it returns to the staged list on the Activities
+   * tab exactly like it started. Deleting an activity for good is still only
+   * available from the Activities tab, which is the trip's master list.
+   */
+  const unscheduleMut = useMutation({
+    mutationFn: (item: Item) =>
+      updateItemFn({ data: { id: item.id, day_index: null, sort_order: 0 } }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Moved back to your activities list");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   /** A day's configured start time only feeds drive-time guidance and the
    * arrival-conflict check below — it is never written onto an item. */
   const setDayStartTime = (dayIndex: number, hhmm: string | null) => {
@@ -687,7 +706,7 @@ function WorkspacePage() {
    */
   const runAdvisor = async (
     moves: ItemMove[],
-    moved: { id: string; fromDay: number; toDay: number },
+    moved: { id: string; fromDay: number | null; toDay: number },
   ) => {
     const movedId = moved.id;
     if (advisorCallsRef.current >= ADVISOR_CALL_BUDGET) return;
@@ -698,12 +717,17 @@ function WorkspacePage() {
     // Assess the POST-drag arrangement. The query cache still holds pre-drag
     // state at this point (the reorder is only just being persisted), so the
     // moved item would not yet appear on its new day — project the moves over
-    // the current items instead of waiting for a refetch.
+    // the current items instead of waiting for a refetch. Excluding only
+    // lodging candidates (not staged activities, unlike committedItems) so a
+    // just-scheduled activity — previously staged, day_index null in cache —
+    // is still picked up by the day filter below once its move is applied.
     const moveById = new Map(moves.map((m) => [m.id, m]));
-    const projected = committedItems(data?.items ?? []).map((i) => {
-      const m = moveById.get(i.id);
-      return m ? { ...i, day_index: m.day_index, sort_order: m.sort_order } : i;
-    });
+    const projected = (data?.items ?? [])
+      .filter((i) => !isLodgingCandidate(i))
+      .map((i) => {
+        const m = moveById.get(i.id);
+        return m ? { ...i, day_index: m.day_index, sort_order: m.sort_order } : i;
+      });
 
     const dayItems = projected
       .filter((i) => i.day_index === moved.toDay)
@@ -929,7 +953,9 @@ function WorkspacePage() {
                 setAdvice(null);
               }}
               onAdd={(item) => handleAdd(item)}
-              onRemove={(id) => removeMut.mutate(id)}
+              onRemove={(item) =>
+                item.kind === "activity" ? unscheduleMut.mutate(item) : removeMut.mutate(item.id)
+              }
               onReorder={(moves, moved) => {
                 reorderMut.mutate({
                   moves,

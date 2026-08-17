@@ -6,6 +6,7 @@ import {
   KeyboardSensor,
   closestCorners,
   pointerWithin,
+  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
@@ -24,7 +25,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   X,
   Plus,
@@ -36,7 +36,11 @@ import {
   SendHorizonal,
   Lightbulb,
   MessageCircle,
+  MapPin,
   Clock,
+  ChevronsLeft,
+  ChevronsRight,
+  Undo2,
 } from "lucide-react";
 import { committedItems, formatClockUTC } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
@@ -44,6 +48,12 @@ import type { Tables } from "@/integrations/supabase/types";
 type Item = Tables<"trip_items">;
 
 const ICONS = { lodging: Bed, transport: Car, activity: Sparkles, block: Coffee } as const;
+
+/** Drag ids for activities-panel rows are prefixed so the same trip_items id
+ * can't collide with that item's day-column row registered in the same
+ * DndContext (the day-N / daytab-N split exists for the same reason). */
+const LIST_ID_PREFIX = "list-";
+const ACTIVITIES_PANEL_DROP_ID = "activities-panel";
 
 export interface ItemMove {
   id: string;
@@ -74,13 +84,18 @@ interface Props {
     cost_cents: number;
     day_index: number;
   }) => void;
-  onRemove: (id: string) => void;
+  /** Activities: unschedule (back to staged). Everything else: a real delete. */
+  onRemove: (item: Item) => void;
   /**
    * Persists a drag: the moved item plus any siblings whose order shifted.
    * `moved` describes what the traveler actually dragged, so an advisory check
-   * can run afterwards without re-deriving it.
+   * can run afterwards without re-deriving it. `fromDay` is null when the drag
+   * scheduled a previously-staged activity for the first time.
    */
-  onReorder: (moves: ItemMove[], moved?: { id: string; fromDay: number; toDay: number }) => void;
+  onReorder: (
+    moves: ItemMove[],
+    moved?: { id: string; fromDay: number | null; toDay: number },
+  ) => void;
   /** At most one advisory note, or null. */
   advice: { day: number; itemId: string; note: string } | null;
   onDismissAdvice: () => void;
@@ -109,7 +124,8 @@ export function ItineraryPanel({
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
   const [chatInput, setChatInput] = useState("");
-  const [chatOpen, setChatOpen] = useState(false);
+  const [rightView, setRightView] = useState<"map" | "chat">("map");
+  const [activitiesOpen, setActivitiesOpen] = useState(true);
   const [selectedDayRaw, setSelectedDayRaw] = useState(0);
 
   const sendChat = () => {
@@ -119,9 +135,13 @@ export function ItineraryPanel({
     setChatInput("");
   };
 
-  // Lodging still under comparison, and activities still staged on the
-  // Activities tab, never reach the itinerary.
+  // Lodging still under comparison never reaches the itinerary; staged
+  // activities are excluded from day grouping but still show in the
+  // activities panel below.
   const scheduled = committedItems(items);
+  const allActivities = items
+    .filter((i) => i.kind === "activity")
+    .sort((a, b) => (a.day_index ?? -1) - (b.day_index ?? -1));
 
   const days = numDays > 0 ? numDays : Math.max(1, ...scheduled.map((i) => (i.day_index ?? 0) + 1));
 
@@ -174,10 +194,11 @@ export function ItineraryPanel({
     return null;
   };
 
-  // Droppable ids are an item id, a day column ("day-N"), or a day tab
-  // ("daytab-N"). Tabs need their OWN prefix: the selected day renders both a
-  // tab and a column, and registering two droppables under the same id breaks
-  // dnd-kit's registry — which silently killed drops onto tabs.
+  // Droppable ids are an item id, a day column ("day-N"), a day tab
+  // ("daytab-N"), or the activities panel itself. Tabs need their OWN prefix:
+  // the selected day renders both a tab and a column, and registering two
+  // droppables under the same id breaks dnd-kit's registry — which silently
+  // killed drops onto tabs.
   const resolveTargetDay = (overId: string): number | null => {
     if (overId.startsWith("daytab-")) return Number(overId.slice(7));
     if (overId.startsWith("day-")) return Number(overId.slice(4));
@@ -189,17 +210,31 @@ export function ItineraryPanel({
     const { active, over } = event;
     if (!over) return;
 
-    const activeId = String(active.id);
+    const rawActiveId = String(active.id);
+    const activeId = rawActiveId.startsWith(LIST_ID_PREFIX)
+      ? rawActiveId.slice(LIST_ID_PREFIX.length)
+      : rawActiveId;
     const overId = String(over.id);
-    const fromDay = dayOf(activeId);
+
+    // Dropped onto the activities panel itself: unschedule a scheduled
+    // activity. A staged one dropped back onto its own list is a no-op.
+    if (overId === ACTIVITIES_PANEL_DROP_ID) {
+      const item = items.find((i) => i.id === activeId);
+      if (item && item.kind === "activity" && item.day_index != null) onRemove(item);
+      return;
+    }
+
     const toDay = resolveTargetDay(overId);
-    if (fromDay == null || toDay == null) return;
+    if (toDay == null) return;
 
-    const source = [...(byDay.get(fromDay) ?? [])];
-    const moved = source.find((i) => i.id === activeId);
-    if (!moved) return;
+    // null here means "staged" — the activity has no current day, so this
+    // drag schedules it for the first time rather than moving it.
+    const fromDay = dayOf(activeId);
+    const item = items.find((i) => i.id === activeId);
+    if (!item) return;
 
-    if (fromDay === toDay) {
+    if (fromDay != null && fromDay === toDay) {
+      const source = [...(byDay.get(fromDay) ?? [])];
       const oldIndex = source.findIndex((i) => i.id === activeId);
       const newIndex = overId.startsWith("day-")
         ? source.length - 1
@@ -220,101 +255,33 @@ export function ItineraryPanel({
           0,
           target.findIndex((i) => i.id === overId),
         );
-    target.splice(insertAt, 0, moved);
+    target.splice(insertAt, 0, item);
 
-    const remaining = source.filter((i) => i.id !== activeId);
+    const remaining =
+      fromDay != null ? (byDay.get(fromDay) ?? []).filter((i) => i.id !== activeId) : [];
     onReorder(
       [
         ...target.map((i, idx) => ({ id: i.id, day_index: toDay, sort_order: idx })),
-        ...remaining.map((i, idx) => ({ id: i.id, day_index: fromDay, sort_order: idx })),
+        ...remaining.map((i, idx) => ({ id: i.id, day_index: fromDay!, sort_order: idx })),
       ],
       { id: activeId, fromDay, toDay },
     );
   };
 
   const handleDragStart = (event: DragStartEvent) => {
-    setDragging(scheduled.find((i) => i.id === String(event.active.id)) ?? null);
+    const rawId = String(event.active.id);
+    const realId = rawId.startsWith(LIST_ID_PREFIX) ? rawId.slice(LIST_ID_PREFIX.length) : rawId;
+    setDragging(items.find((i) => i.id === realId) ?? null);
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="font-display text-xl font-semibold">Day by day</h2>
-          <p className="text-sm text-muted-foreground">
-            Drag any item to reorder it, or move it to another day.
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setChatOpen(true)}
-          data-testid="itinerary-chat-open"
-        >
-          <MessageCircle className="mr-1.5 h-4 w-4" /> Ask AI
-          {chat.messages.length > 0 && (
-            <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-              {chat.messages.length}
-            </span>
-          )}
-        </Button>
+      <div>
+        <h2 className="font-display text-xl font-semibold">Day by day</h2>
+        <p className="text-sm text-muted-foreground">
+          Drag any activity onto a day to schedule it, or drag it back here to unschedule.
+        </p>
       </div>
-
-      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-0 sm:max-w-md"
-          data-testid="itinerary-chat"
-        >
-          <SheetHeader>
-            <SheetTitle>Ask AI to edit the plan</SheetTitle>
-          </SheetHeader>
-          <div className="my-3 flex-1 space-y-2 overflow-y-auto">
-            {chat.messages.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Tell me what to change — "move the aquarium to day 3", "remove the boat tour", "swap
-                days 1 and 2", "add dinner at a steakhouse on day 2" — and I'll update the plan.
-              </p>
-            )}
-            {chat.messages.map((m, i) => (
-              <div
-                key={i}
-                className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
-                  m.role === "user"
-                    ? "ml-auto bg-sidebar-active text-white"
-                    : "bg-muted text-foreground"
-                }`}
-              >
-                {m.content}
-              </div>
-            ))}
-            {chat.pending && (
-              <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
-                …
-              </div>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              placeholder="Ask for a change…"
-              value={chatInput}
-              data-testid="itinerary-chat-input"
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") sendChat();
-              }}
-            />
-            <Button
-              size="icon"
-              onClick={sendChat}
-              data-testid="itinerary-chat-send"
-              disabled={!chatInput.trim() || chat.pending}
-            >
-              <SendHorizonal className="h-4 w-4" />
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
 
       <DndContext
         sensors={sensors}
@@ -323,148 +290,332 @@ export function ItineraryPanel({
         onDragEnd={handleDragEnd}
         onDragCancel={() => setDragging(null)}
       >
-        {/* Day tabs double as drop targets so an item can still be moved to a
-            day that isn't currently shown — otherwise switching to a day-at-a-
-            time view would remove the only way to drag across days. */}
-        <div className="flex flex-wrap gap-2" data-testid="day-tabs">
-          {Array.from({ length: days }).map((_, dayIdx) => (
-            <DayTab
-              key={dayIdx}
-              dayIdx={dayIdx}
-              active={dayIdx === selectedDay}
-              count={(byDay.get(dayIdx) ?? []).length}
-              startDate={startDate}
-              onSelect={() => setSelectedDay(dayIdx)}
-            />
-          ))}
-        </div>
+        <div className="flex items-start gap-4">
+          <ActivitiesDragPanel
+            activities={allActivities}
+            open={activitiesOpen}
+            onToggle={() => setActivitiesOpen((o) => !o)}
+          />
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="space-y-4">
-            {[selectedDay].map((dayIdx) => {
-              const dayItems = byDay.get(dayIdx) ?? [];
-              const date = startDate
-                ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(
-                    undefined,
-                    { weekday: "short", month: "short", day: "numeric" },
-                  )
-                : null;
+          <div className="min-w-0 flex-1 space-y-4">
+            {/* Day tabs double as drop targets so an item can still be moved to
+                a day that isn't currently shown — otherwise switching to a
+                day-at-a-time view would remove the only way to drag across
+                days. */}
+            <div className="flex flex-wrap gap-2" data-testid="day-tabs">
+              {Array.from({ length: days }).map((_, dayIdx) => (
+                <DayTab
+                  key={dayIdx}
+                  dayIdx={dayIdx}
+                  active={dayIdx === selectedDay}
+                  count={(byDay.get(dayIdx) ?? []).length}
+                  startDate={startDate}
+                  onSelect={() => setSelectedDay(dayIdx)}
+                />
+              ))}
+            </div>
 
-              return (
-                <DayColumn key={dayIdx} dayIdx={dayIdx}>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="font-display font-semibold">
-                      Day {dayIdx + 1}{" "}
-                      {date && (
-                        <span className="ml-2 text-sm font-normal text-muted-foreground">
-                          {date}
-                        </span>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <div className="space-y-4">
+                {[selectedDay].map((dayIdx) => {
+                  const dayItems = byDay.get(dayIdx) ?? [];
+                  const date = startDate
+                    ? new Date(
+                        new Date(startDate).getTime() + dayIdx * 86400000,
+                      ).toLocaleDateString(undefined, {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                      })
+                    : null;
+
+                  return (
+                    <DayColumn key={dayIdx} dayIdx={dayIdx}>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="font-display font-semibold">
+                          Day {dayIdx + 1}{" "}
+                          {date && (
+                            <span className="ml-2 text-sm font-normal text-muted-foreground">
+                              {date}
+                            </span>
+                          )}
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Clock className="h-3.5 w-3.5" />
+                            Start
+                            <Input
+                              type="time"
+                              className="h-7 w-24 px-2 text-xs"
+                              value={dayStartTimes[String(dayIdx)] ?? ""}
+                              onChange={(e) => onSetDayStartTime(dayIdx, e.target.value || null)}
+                              data-testid={`day-start-time-${dayIdx}`}
+                            />
+                          </label>
+                          <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
+                            <Plus className="mr-1 h-3 w-3" /> Block
+                          </Button>
+                        </div>
+                      </div>
+
+                      {blockDay === dayIdx && (
+                        <div className="mb-3 flex gap-2">
+                          <Input
+                            placeholder="e.g. Relax, no plans"
+                            value={blockTitle}
+                            onChange={(e) => setBlockTitle(e.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              if (blockTitle.trim()) {
+                                onAdd({
+                                  kind: "block",
+                                  title: blockTitle,
+                                  cost_cents: 0,
+                                  day_index: dayIdx,
+                                });
+                                setBlockTitle("");
+                                setBlockDay(null);
+                              }
+                            }}
+                          >
+                            Add
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setBlockDay(null);
+                              setBlockTitle("");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
                       )}
-                    </h3>
-                    <div className="flex items-center gap-2">
-                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Clock className="h-3.5 w-3.5" />
-                        Start
-                        <Input
-                          type="time"
-                          className="h-7 w-24 px-2 text-xs"
-                          value={dayStartTimes[String(dayIdx)] ?? ""}
-                          onChange={(e) => onSetDayStartTime(dayIdx, e.target.value || null)}
-                          data-testid={`day-start-time-${dayIdx}`}
-                        />
-                      </label>
-                      <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
-                        <Plus className="mr-1 h-3 w-3" /> Block
+
+                      {advice?.day === dayIdx && (
+                        <div
+                          className="mb-3 flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/5 py-1 pl-2.5 pr-1 text-xs"
+                          data-testid="advisor-note"
+                        >
+                          <Lightbulb className="h-3 w-3 shrink-0 text-warning-foreground" />
+                          <p className="flex-1 leading-snug text-muted-foreground">{advice.note}</p>
+                          <button
+                            onClick={onDismissAdvice}
+                            aria-label="Dismiss suggestion"
+                            data-testid="advisor-dismiss"
+                            className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      )}
+
+                      {dayItems.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          Nothing scheduled. Add a block above, or drag an activity here.
+                        </p>
+                      )}
+
+                      <SortableContext
+                        items={dayItems.map((i) => i.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <div className="space-y-2">
+                          {dayItems.map((it) => (
+                            <SortableRow
+                              key={it.id}
+                              item={it}
+                              onRemove={onRemove}
+                              onPinTime={onPinTime}
+                            />
+                          ))}
+                        </div>
+                      </SortableContext>
+                    </DayColumn>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex gap-1 rounded-lg border border-border bg-muted/40 p-1 text-sm">
+                  <button
+                    onClick={() => setRightView("map")}
+                    data-testid="itinerary-right-map-tab"
+                    className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${
+                      rightView === "map"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <MapPin className="mr-1.5 inline h-3.5 w-3.5" /> Map
+                  </button>
+                  <button
+                    onClick={() => setRightView("chat")}
+                    data-testid="itinerary-right-chat-tab"
+                    className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${
+                      rightView === "chat"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <MessageCircle className="mr-1.5 inline h-3.5 w-3.5" /> Ask AI
+                    {chat.messages.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                        {chat.messages.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {rightView === "map" ? (
+                  dayPanel
+                ) : (
+                  <div
+                    className="flex min-h-[420px] flex-col rounded-2xl border border-border bg-card p-4 shadow-soft"
+                    data-testid="itinerary-chat"
+                  >
+                    <p className="mb-2 text-xs text-muted-foreground">
+                      Ask for a change — "move the aquarium to day 3", "swap days 1 and 2" — or ask
+                      a question — "what are good restaurants near day 2's stops?"
+                    </p>
+                    <div className="flex-1 space-y-2 overflow-y-auto">
+                      {chat.messages.map((m, i) => (
+                        <div
+                          key={i}
+                          className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                            m.role === "user"
+                              ? "ml-auto bg-sidebar-active text-white"
+                              : "bg-muted text-foreground"
+                          }`}
+                        >
+                          {m.content}
+                        </div>
+                      ))}
+                      {chat.pending && (
+                        <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+                          …
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <Input
+                        placeholder="Ask for a change or a question…"
+                        value={chatInput}
+                        data-testid="itinerary-chat-input"
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") sendChat();
+                        }}
+                      />
+                      <Button
+                        size="icon"
+                        onClick={sendChat}
+                        data-testid="itinerary-chat-send"
+                        disabled={!chatInput.trim() || chat.pending}
+                      >
+                        <SendHorizonal className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
-
-                  {blockDay === dayIdx && (
-                    <div className="mb-3 flex gap-2">
-                      <Input
-                        placeholder="e.g. Relax, no plans"
-                        value={blockTitle}
-                        onChange={(e) => setBlockTitle(e.target.value)}
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          if (blockTitle.trim()) {
-                            onAdd({
-                              kind: "block",
-                              title: blockTitle,
-                              cost_cents: 0,
-                              day_index: dayIdx,
-                            });
-                            setBlockTitle("");
-                            setBlockDay(null);
-                          }
-                        }}
-                      >
-                        Add
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          setBlockDay(null);
-                          setBlockTitle("");
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  )}
-
-                  {advice?.day === dayIdx && (
-                    <div
-                      className="mb-3 flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/5 py-1 pl-2.5 pr-1 text-xs"
-                      data-testid="advisor-note"
-                    >
-                      <Lightbulb className="h-3 w-3 shrink-0 text-warning-foreground" />
-                      <p className="flex-1 leading-snug text-muted-foreground">{advice.note}</p>
-                      <button
-                        onClick={onDismissAdvice}
-                        aria-label="Dismiss suggestion"
-                        data-testid="advisor-dismiss"
-                        className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-
-                  {dayItems.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      Nothing scheduled. Add a block above, or drag an item here.
-                    </p>
-                  )}
-
-                  <SortableContext
-                    items={dayItems.map((i) => i.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <div className="space-y-2">
-                      {dayItems.map((it) => (
-                        <SortableRow
-                          key={it.id}
-                          item={it}
-                          onRemove={onRemove}
-                          onPinTime={onPinTime}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DayColumn>
-              );
-            })}
+                )}
+              </div>
+            </div>
           </div>
-
-          <div className="space-y-3">{dayPanel}</div>
         </div>
 
         <DragOverlay>{dragging ? <ItemRow item={dragging} dragging /> : null}</DragOverlay>
       </DndContext>
+    </div>
+  );
+}
+
+function ActivitiesDragPanel({
+  activities,
+  open,
+  onToggle,
+}: {
+  activities: Item[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: ACTIVITIES_PANEL_DROP_ID });
+
+  if (!open) {
+    return (
+      <button
+        onClick={onToggle}
+        aria-label="Show activities list"
+        data-testid="activities-panel-expand"
+        className="mt-1 flex shrink-0 flex-col items-center gap-2 rounded-xl border border-border bg-card px-1.5 py-3 text-muted-foreground hover:text-foreground"
+      >
+        <ChevronsRight className="h-4 w-4" />
+        <span className="[writing-mode:vertical-lr] text-xs font-medium">Activities</span>
+      </button>
+    );
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid="activities-drag-panel"
+      className={`w-64 shrink-0 space-y-2 rounded-2xl border p-3 shadow-soft transition-colors ${
+        isOver ? "border-primary bg-primary/5" : "border-border bg-card"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-sm font-semibold">Activities</h3>
+        <button
+          onClick={onToggle}
+          aria-label="Hide activities list"
+          data-testid="activities-panel-collapse"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <ChevronsLeft className="h-4 w-4" />
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">Drag onto a day to schedule.</p>
+      <div className="max-h-[540px] space-y-1.5 overflow-y-auto">
+        {activities.length === 0 && (
+          <p className="py-4 text-center text-xs text-muted-foreground">No activities yet.</p>
+        )}
+        {activities.map((a) => (
+          <ActivityListRow key={a.id} item={a} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ActivityListRow({ item }: { item: Item }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `${LIST_ID_PREFIX}${item.id}`,
+  });
+  const Icon = ICONS[item.kind as keyof typeof ICONS] ?? Coffee;
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      style={{ transform: transform ? CSS.Translate.toString(transform) : undefined }}
+      data-testid="activities-panel-row"
+      className={`flex cursor-grab items-center gap-2 rounded-lg border border-border bg-background p-2 text-sm touch-none active:cursor-grabbing ${
+        isDragging ? "opacity-40" : ""
+      }`}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
+      <span className="flex-1 truncate">{item.title}</span>
+      {item.day_index != null ? (
+        <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+          Day {item.day_index + 1}
+        </span>
+      ) : (
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          Unscheduled
+        </span>
+      )}
     </div>
   );
 }
@@ -536,7 +687,7 @@ function SortableRow({
   onPinTime,
 }: {
   item: Item;
-  onRemove: (id: string) => void;
+  onRemove: (item: Item) => void;
   onPinTime: (item: Item, hhmm: string | null) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -574,7 +725,7 @@ function ItemRow({
   dragging,
 }: {
   item: Item;
-  onRemove?: (id: string) => void;
+  onRemove?: (item: Item) => void;
   onPinTime?: (item: Item, hhmm: string | null) => void;
   handleProps?: Record<string, unknown>;
   dragging?: boolean;
@@ -583,6 +734,7 @@ function ItemRow({
   const time = formatClockUTC(item.start_time);
   const [pinOpen, setPinOpen] = useState(false);
   const [pinValue, setPinValue] = useState(() => hhmmFromTimestamp(item.start_time));
+  const isActivity = item.kind === "activity";
   return (
     <div
       className={`group flex items-center gap-2 rounded-lg border border-border bg-background p-3 ${
@@ -657,8 +809,17 @@ function ItemRow({
         </Popover>
       )}
       {onRemove && (
-        <button onClick={() => onRemove(item.id)} className="opacity-0 group-hover:opacity-100">
-          <X className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+        <button
+          onClick={() => onRemove(item)}
+          className="opacity-0 group-hover:opacity-100"
+          title={isActivity ? "Move back to your activities list" : "Remove"}
+          aria-label={isActivity ? `Unschedule ${item.title}` : `Remove ${item.title}`}
+        >
+          {isActivity ? (
+            <Undo2 className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+          ) : (
+            <X className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+          )}
         </button>
       )}
     </div>

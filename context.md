@@ -327,7 +327,72 @@ Fix and the resulting design, both in `workspace-store.ts`:
   built on purpose to catch exactly this."
 - The itinerary chat moved from an always-visible block above the day tabs into a `Sheet`-based
   right-side drawer, opened on demand — chosen over a permanently-split 3-column layout so the day
-  list and map keep their existing full width by default.
+  list and map keep their existing full width by default. **Superseded in v0.7.0** — see below;
+  the `Sheet` read as a detached popup rather than part of the screen, so it was replaced.
+
+### Itinerary intelligence, drag-and-drop, and chat research (v0.7.0)
+
+**Real distance, not inferred proximity.** `buildItinerary` was trusting Gemini to infer
+geographic grouping from raw `lat,lng` text in the prompt — no real distance was ever computed.
+A reported case (four venues a few minutes apart in Merrillville/Michigan City, IN) landed on
+different days despite the model being shown their coordinates. Fixed with a small greedy
+union-find clustering pass (`src/lib/geo-cluster.ts`, `clusterByDistance`, using the existing
+`haversineMiles`) run over enriched activities before the prompt is built; activities within
+`CLUSTER_RADIUS_MILES` (9, transitively chained) get a shared `cluster CN` label handed to the
+model as a **measured fact**, with an explicit instruction not to split a cluster just to even out
+day sizes. The model still makes the final call (a conflicting preferred date or a full day can
+still override), but it's no longer inferring proximity from scratch.
+
+**Remove = unschedule for activities, not delete.** `ItineraryPanel`'s `onRemove` prop changed
+from `(id: string) => void` to `(item: Item) => void` so the caller can branch on `kind` without a
+lookup. In `trips.$tripId.tsx`, an activity's remove now calls a new `unscheduleMut`
+(`day_index: null, sort_order: 0` via the existing `updateItemFn`) instead of `removeMut`
+(hard delete); every other kind (`block`/`transport`/`lodging`) is unchanged, since only activities
+have a staged/scheduled duality (`isStagedActivity`). The Activities tab's own remove button is
+untouched — it's still a real delete, and is the only place one exists now.
+
+**Draggable activities panel — the `list-` id prefix.** A new left-side panel
+(`ActivitiesDragPanel`/`ActivityListRow` in `itinerary-panel.tsx`) shows every activity, staged and
+scheduled, as a drag source. A scheduled activity's row already exists as a draggable in its day
+column, so the panel's rows use a **prefixed** drag id (`list-${item.id}`) — the same trick as the
+existing `day-N`/`daytab-N` split, needed because dnd-kit's registry breaks if two draggables share
+an id in one `DndContext`. `handleDragStart`/`handleDragEnd` strip the prefix to resolve the real
+row. Dropping onto the day column with the item's origin day resolving to `null` (staged) is
+treated as "first-time scheduling," not a move — no source-day cleanup patch, since there's nothing
+to clean up. Dropping back onto the panel's own droppable (`activities-panel`) unschedules a
+scheduled activity via the same path as the itinerary remove button above.
+- `ItemMove`'s `moved` callback shape changed `fromDay: number` → `fromDay: number | null`
+  end-to-end (`itinerary-panel.tsx` through `runAdvisor` in `trips.$tripId.tsx`) to carry this.
+  `adviseItineraryChange`'s `from_day` was already nullable, so no server-side schema change.
+- `runAdvisor`'s projection also changed from `committedItems(...)` to filtering out only lodging
+  candidates: `committedItems` excludes staged activities *before* the move is applied, so a
+  newly-scheduled (previously staged) activity would otherwise be invisible to the advisor's
+  post-drag day check. Filtering only `isLodgingCandidate` keeps everything else (including
+  not-yet-remapped staged rows, which the day filter downstream naturally excludes since their
+  `day_index` stays null) so the remap actually takes effect.
+
+**Chat: inline tab switcher, not an overlay.** The `Sheet` drawer is gone. The itinerary's
+right-hand slot (day panel column) now has a small "Map" / "Ask AI" tab toggle
+(`rightView: "map" | "chat"` state) — "Map" renders the existing `ItineraryDayPanel` untouched,
+"Ask AI" renders the same message-list/input JSX as a plain in-flow `<div>`, no portal/backdrop/
+fixed positioning. Chosen (per user decision) over a 4-column squeeze or a horizontal activities
+shelf — see the layout options weighed at the time for the alternatives not taken.
+
+**Chat research mode — additive, no response-shape change.** `chatItinerary`'s exported
+`chatItinerarySchema`/`ItineraryOp` are unchanged; the actual Gemini call now uses an internal-only
+superset schema (`chatRoutedSchema`) with `intent: "edit" | "research" | "clarify"`,
+`research_query`, `day_index_hint`. A research turn returns `operations: []` and puts the answer in
+`reply` — the caller already treated an empty-operations response as "just show the reply, nothing
+to apply," so this needed zero changes downstream (`chatMut`/`applyOps`/undo/toast/chat bubble).
+Research answers are grounded in a real Places search (new `searchNearby` in
+`google-places.server.ts`, generalizing the previously-private `searchTextCategory` from 7 canned
+category strings to arbitrary free text) centered on the referenced day's stops' centroid — which
+required adding `lat`/`lng` to `chatItinerary`'s `items` input schema (it previously only carried a
+`location` address string, no coordinates) — or the destination's geocoded location if no day is
+implicated. Real results are then handed to a second `generateStructured` call instructed to use
+*only* the given places and explain proximity/fit, not invent anything. A "clarify" intent (can't
+tell which day/place a research question means) short-circuits before any Places call, mirroring
+the existing edit-ambiguity rule ("never guess at a removal") extended to research targets.
 
 ### Itinerary building: the planner only sees staged activities
 
@@ -535,6 +600,25 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.7.0 (itinerary intelligence, drag-and-drop, chat research) — 2026-08-17
+
+Not yet verified end-to-end in a live browser — see §3's "Itinerary intelligence, drag-and-drop,
+and chat research (v0.7.0)" for the design, and `FEATURE_TRACKING.md` for the manual-test
+checklist. No schema/migration change this round (no new columns) — purely code.
+
+1. **Geography-aware clustering** in `buildItinerary` — real haversine distance, not inferred
+   proximity, drives which activities are grouped onto the same day.
+2. **Remove from itinerary unschedules, not deletes** — an activity removed from the Itinerary tab
+   goes back to staged; the Activities tab is the only place a real delete happens now.
+3. **Draggable activities panel** — a persistent left-side list (staged + scheduled activities)
+   that's itself a drag source onto any day, using a `list-` id prefix to avoid colliding with the
+   same item's day-column row in the same `DndContext`.
+4. **Chat became an inline Map/Ask AI tab switcher** in the day panel's slot, replacing the
+   `Sheet`-based drawer from v0.6.0, which read as a detached popup.
+5. **Chat research mode** — open-ended questions get answered from a real Places search grounded
+   in the referenced day's actual stops, not the model's general knowledge; additive, no response
+   shape change (`operations: []` + `reply` already covered this case).
 
 ### v0.6.0 (itinerary timing fix + UI cleanup) — 2026-08-17
 

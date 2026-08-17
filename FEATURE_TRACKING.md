@@ -31,6 +31,25 @@ human run-through.)
 - [ ] **Chat drawer layout** (itinerary timing fix) — confirm the collapsible chat drawer opens/
       closes cleanly and the day tabs/list/map layout is unaffected when it's closed. Added
       2026-08-17.
+- [ ] **Geography-aware clustering in "Build out itinerary"** — confirm against the reported real
+      case (four Merrillville/Michigan City, IN venues within ~5 minutes of each other) that they
+      now land on the same day; tune `CLUSTER_RADIUS_MILES` in `geo-cluster.ts` (currently 9) if
+      it over- or under-groups on real trips. Added 2026-08-17.
+- [ ] **"Remove from itinerary" unschedules instead of deleting** — confirm removing a scheduled
+      activity from the Itinerary tab returns it to the Activities tab's staged list rather than
+      deleting it, and that deleting from the Activities tab still actually deletes it. Added
+      2026-08-17.
+- [ ] **Draggable activities panel** (left side of the Itinerary tab) — confirm dragging a staged
+      activity onto a day schedules it, dragging a scheduled one back onto the panel unschedules
+      it, the panel's collapse toggle works, and the day map/notes stay in sync either way. Added
+      2026-08-17.
+- [ ] **Chat reads as part of the screen, not a popup** — confirm the Map/Ask AI tab switcher in
+      the itinerary's right slot feels integrated (no backdrop/overlay), and that existing edit
+      commands ("move X to day 2") still work exactly as before. Added 2026-08-17.
+- [ ] **Chat research mode** — confirm an open-ended question ("what are good restaurants near
+      day 2's stops?") returns real, named Places results with reasoning (not hallucinated), and
+      that a genuinely ambiguous question gets a clarifying reply instead of a guess. Added
+      2026-08-17.
 
 ## Scoped, not yet built
 (Decided to build, not started or paused.)

@@ -1,5 +1,68 @@
 # Wayfinder Changelog
 
+## v0.7.0 — 2026-08-17
+
+### Overview
+
+Itinerary intelligence, drag-and-drop overhaul, and chat integration — a follow-up to v0.6.0's
+timing fix.
+
+"Build out itinerary" now measures real distance between activities instead of asking the AI to
+guess proximity from coordinates in a text prompt — a reported real case (four venues a few
+minutes apart in the Merrillville/Michigan City, IN area) was landing on different days despite
+being genuinely close together. Removing an activity from the Itinerary tab no longer deletes it
+— it goes back to your staged Activities list, exactly like it started; deleting for good still
+only happens from the Activities tab. The Itinerary tab also got a persistent, always-visible list
+of every activity (staged and scheduled) on the left, so you can drag straight from there onto any
+day instead of only reordering what's already placed. The chat moved from a slide-out drawer into
+a Map/Ask AI tab switcher in the day panel's own slot, so it reads as part of the screen rather
+than a popup on top of it — and it can now field open-ended questions ("what are good restaurants
+near day 2's stops?"), grounded in a real Places search rather than guessed from general
+knowledge, alongside its existing move/remove/add/swap_days edits.
+
+### Updates
+
+#### AI itinerary building
+
+**Real distance drives grouping, not inferred proximity**
+
+- _Technical:_ `buildItinerary` now runs a simple greedy/union-find clustering pass
+  (`src/lib/geo-cluster.ts`, `clusterByDistance`) over enriched activities' coordinates using the
+  existing `haversineMiles`, before the Gemini call. Activities within ~9 miles of each other (and
+  transitively chained) share a cluster id, which is handed to the model as a measured fact in the
+  prompt ("cluster CN") with an explicit rule to keep a cluster on one day unless a stronger
+  constraint (a conflicting preferred date, a full day) requires otherwise.
+- _For everyone:_ Activities that are actually close together in real life are much more likely to
+  land on the same day now, instead of depending on the AI correctly reading raw lat/lng numbers.
+
+#### Itinerary
+
+**Remove means unschedule, not delete**
+
+- Removing a scheduled activity from the Itinerary tab now sends it back to the staged list on the
+  Activities tab (`day_index` cleared) instead of permanently deleting the row. A real delete is
+  still available — from the Activities tab, which is the trip's master list.
+
+**Draggable activities panel**
+
+- A collapsible panel on the left of the Itinerary tab lists every activity — staged and scheduled
+  — and doubles as a drag source: drag one onto a day to schedule it, or drag a scheduled one back
+  onto the panel to unschedule it. Existing within-day drag-to-reorder is unchanged.
+
+**Chat is part of the screen, not a popup**
+
+- Replaced the slide-out drawer (a `Sheet`/dialog overlay) with a Map/Ask AI tab switcher in the
+  day panel's own slot — no backdrop, no floating panel, same screen the whole time.
+
+**Chat can research, not just edit**
+
+- The itinerary chat now recognizes open-ended questions ("what's good near day 2?") separately
+  from edit requests, searches Google Places for real candidates near the relevant day's actual
+  stops (or the destination generally), and reasons over genuine results — proximity, rating,
+  why it fits — rather than answering from the model's own general knowledge. Genuinely ambiguous
+  questions (which day? which place?) get a clarifying question instead of a guess, same as the
+  existing rule for edit requests. Existing edit operations are unchanged.
+
 ## v0.6.0 — 2026-08-17
 
 ### Overview
