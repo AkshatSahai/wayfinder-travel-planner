@@ -6,7 +6,8 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-06** (after v0.4.0, verified end-to-end in production)
+Last updated: **2026-08-16** (repo hygiene: LF normalization + prettier gate green;
+last feature release v0.4.0, verified end-to-end in production)
 
 ---
 
@@ -30,6 +31,15 @@ File-based routing rules live in `src/routes/README.md`. `routeTree.gen.ts` is g
 
 **⚠️ Folder nesting.** The GitHub repo root == the `wayfinder-travel-planner-main/` folder.
 If you downloaded a ZIP you may be one level up; `package.json` marks the real root.
+
+**⚠️ Line endings on Windows.** `.gitattributes` pins the working tree to LF. Before it
+existed, a fresh clone on Windows (where Git defaults `core.autocrlf` to `true`) checked out
+CRLF, and `npx eslint src/` then reported ~12,400 errors — every one of them ``Delete `␍` ``.
+It reads as catastrophic breakage; nothing is actually wrong with the code. If you ever see
+this, **don't** run `eslint --fix` — it rewrites all 124 files and buries a config problem in a
+huge diff. Fix the checkout instead:
+`git config core.autocrlf false && git rm --cached -r . && git reset --hard`.
+The tell that the source is fine: exactly 7 `react-refresh` warnings and no other rule firing.
 
 ---
 
