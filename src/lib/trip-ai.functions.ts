@@ -632,6 +632,122 @@ ${lines}`,
     };
   });
 
+// -------- Day plan: route + notes for one itinerary day --------
+
+/**
+ * Route and notes for a single day.
+ *
+ * Notes are split by provenance and the split is real, not cosmetic:
+ *
+ * - `live` notes restate values Google actually returned (rating, review count,
+ *   price level, editorial summary) — all already in the existing field mask, so
+ *   this adds no cost and no new SKU.
+ * - `guidance` notes are model-written and labelled as such.
+ *
+ * The spec asked for "popular times" as the live signal. Places API (New)
+ * exposes no popular-times field at any tier (checked against Google's data-
+ * fields reference), and opening hours — the nearest real equivalent — sit on the
+ * Enterprise SKU. Rather than label model output as live data, the split above
+ * keeps the distinction the spec actually wanted: the traveler can always tell
+ * measured data from advice.
+ */
+export const dayPlan = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        destination: z.string(),
+        day_number: z.number().int().min(1),
+        stops: z
+          .array(
+            z.object({
+              id: z.string(),
+              title: z.string().max(300),
+              category: z.string().nullable(),
+              lat: z.number().nullable(),
+              lng: z.number().nullable(),
+              rating: z.number().nullable(),
+              review_count: z.number().nullable(),
+              description: z.string().max(500).nullable(),
+              start_time: z.string().nullable(),
+            }),
+          )
+          .max(30),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const located = data.stops.filter(
+      (s): s is typeof s & { lat: number; lng: number } => s.lat != null && s.lng != null,
+    );
+
+    // ---- Route (OSRM, coordinates only — no geocoding round trips) ----
+    let route: {
+      total_miles: number;
+      total_hours: number;
+      leg_hours: number[];
+      path: { lat: number; lng: number }[];
+    } | null = null;
+    let route_error: string | null = null;
+    if (located.length >= 2) {
+      try {
+        const { getRouteForCoords } = await import("./providers/osrm.server");
+        route = await getRouteForCoords(located.map((s) => ({ lat: s.lat, lng: s.lng })));
+        if (!route) route_error = "Couldn't find a driving route between these stops.";
+      } catch (err) {
+        console.error("[day-plan] osrm error:", err);
+        route_error = "Driving estimate unavailable right now.";
+      }
+    }
+
+    // ---- Live notes: restatements of real Google values, nothing inferred ----
+    const live_notes = data.stops
+      .filter((s) => s.rating != null || s.description)
+      .slice(0, 6)
+      .map((s) => ({
+        stop_id: s.id,
+        text:
+          s.rating != null
+            ? `${s.title}: rated ${s.rating}${s.review_count ? ` from ${s.review_count.toLocaleString()} reviews` : ""} on Google.`
+            : `${s.title}: ${s.description}`,
+      }));
+
+    // ---- Guidance: model-written, explicitly not data ----
+    const summary = data.stops
+      .map(
+        (s) =>
+          `- ${s.title} (${s.category ?? "Activity"})` +
+          (s.start_time ? ` at ${s.start_time.slice(11, 16)}` : "") +
+          (s.rating != null ? ` · rated ${s.rating}` : ""),
+      )
+      .join("\n");
+
+    const guidance = await generateStructured(
+      `Day ${data.day_number} of a trip to ${data.destination} has these stops, in order:
+${summary || "(none)"}
+${route ? `\nDriving between them totals about ${route.total_hours.toFixed(1)} hours over ${Math.round(route.total_miles)} miles.` : ""}
+
+Give up to 3 short, practical notes for this specific day — best time of day for
+a particular stop, a pacing or traffic caution, or a sequencing suggestion.
+
+Rules:
+- Each note is ONE sentence, under 140 characters.
+- Be concrete about THIS day's stops; skip anything generic enough to apply to any trip.
+- Do NOT invent opening hours, ticket prices, or crowd levels as if they were facts —
+  this is advice, and it is shown to the traveler labelled as guidance.
+- Return fewer notes, or none, rather than padding.`,
+      z.object({ notes: z.array(z.string()).max(3) }),
+      "You are a practical local guide. Brief, specific, honest about uncertainty. JSON only.",
+    );
+
+    return {
+      route,
+      route_error,
+      live_notes,
+      guidance_notes: (guidance?.notes ?? []).map((n) => n.trim().slice(0, 140)).filter(Boolean),
+      unplotted: data.stops.filter((s) => s.lat == null || s.lng == null).map((s) => s.title),
+    };
+  });
+
 // -------- Drag advisor (second opinion on a manual edit) --------
 
 const MAX_NOTE_CHARS = 160;

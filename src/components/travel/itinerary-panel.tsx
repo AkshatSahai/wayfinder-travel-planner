@@ -5,9 +5,11 @@ import {
   PointerSensor,
   KeyboardSensor,
   closestCorners,
+  pointerWithin,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -73,6 +75,9 @@ interface Props {
   /** At most one advisory note, or null. */
   advice: { day: number; itemId: string; note: string } | null;
   onDismissAdvice: () => void;
+  /** Right-hand panel for the selected day — map, drive time, and notes. */
+  renderDayPanel: (dayIdx: number) => React.ReactNode;
+  onSelectedDayChange?: (dayIdx: number) => void;
 }
 
 export function ItineraryPanel({
@@ -82,6 +87,8 @@ export function ItineraryPanel({
   chat,
   advice,
   onDismissAdvice,
+  renderDayPanel,
+  onSelectedDayChange,
   onAdd,
   onRemove,
   onReorder,
@@ -90,6 +97,7 @@ export function ItineraryPanel({
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
   const [chatInput, setChatInput] = useState("");
+  const [selectedDayRaw, setSelectedDayRaw] = useState(0);
 
   const sendChat = () => {
     const text = chatInput.trim();
@@ -120,20 +128,48 @@ export function ItineraryPanel({
     list.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
   }
 
+  // Clamp rather than store a raw index: the trip's length can shrink (dates
+  // edited, chat removing a day's contents) while a later day is selected.
+  const selectedDay = Math.min(selectedDayRaw, Math.max(0, days - 1));
+  const setSelectedDay = (d: number) => {
+    setSelectedDayRaw(d);
+    onSelectedDayChange?.(d);
+  };
+  const dayPanel = renderDayPanel(selectedDay);
+
   const sensors = useSensors(
     // A small activation distance keeps the row's remove button clickable.
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // Pointer position first, geometry only as a fallback.
+  //
+  // `closestCorners` alone compares the *dragged row's* rectangle against each
+  // droppable. An itinerary row is far wider than a day tab, so its corners
+  // overlap the neighbouring tab even when the pointer is dead-centre on the
+  // intended one — dropping onto tabs reliably landed one day off. Resolving by
+  // pointer fixes that; closestCorners still covers empty day columns, where
+  // the pointer may not be inside any droppable.
+  const collisionDetection: CollisionDetection = (args) => {
+    const byPointer = pointerWithin(args);
+    return byPointer.length > 0 ? byPointer : closestCorners(args);
+  };
+
   const dayOf = (id: string): number | null => {
     for (const [day, list] of byDay) if (list.some((i) => i.id === id)) return day;
     return null;
   };
 
-  // Droppable ids are either an item id or an empty day's "day-N" container.
-  const resolveTargetDay = (overId: string): number | null =>
-    overId.startsWith("day-") ? Number(overId.slice(4)) : dayOf(overId);
+  // Droppable ids are an item id, a day column ("day-N"), or a day tab
+  // ("daytab-N"). Tabs need their OWN prefix: the selected day renders both a
+  // tab and a column, and registering two droppables under the same id breaks
+  // dnd-kit's registry — which silently killed drops onto tabs.
+  const resolveTargetDay = (overId: string): number | null => {
+    if (overId.startsWith("daytab-")) return Number(overId.slice(7));
+    if (overId.startsWith("day-")) return Number(overId.slice(4));
+    return dayOf(overId);
+  };
 
   const handleDragEnd = (event: DragEndEvent) => {
     setDragging(null);
@@ -250,112 +286,181 @@ export function ItineraryPanel({
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={collisionDetection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onDragCancel={() => setDragging(null)}
       >
-        {Array.from({ length: days }).map((_, dayIdx) => {
-          const dayItems = byDay.get(dayIdx) ?? [];
-          const date = startDate
-            ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(
-                undefined,
-                { weekday: "short", month: "short", day: "numeric" },
-              )
-            : null;
+        {/* Day tabs double as drop targets so an item can still be moved to a
+            day that isn't currently shown — otherwise switching to a day-at-a-
+            time view would remove the only way to drag across days. */}
+        <div className="flex flex-wrap gap-2" data-testid="day-tabs">
+          {Array.from({ length: days }).map((_, dayIdx) => (
+            <DayTab
+              key={dayIdx}
+              dayIdx={dayIdx}
+              active={dayIdx === selectedDay}
+              count={(byDay.get(dayIdx) ?? []).length}
+              startDate={startDate}
+              onSelect={() => setSelectedDay(dayIdx)}
+            />
+          ))}
+        </div>
 
-          return (
-            <DayColumn key={dayIdx} dayIdx={dayIdx}>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-display font-semibold">
-                  Day {dayIdx + 1}{" "}
-                  {date && (
-                    <span className="ml-2 text-sm font-normal text-muted-foreground">{date}</span>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            {[selectedDay].map((dayIdx) => {
+              const dayItems = byDay.get(dayIdx) ?? [];
+              const date = startDate
+                ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(
+                    undefined,
+                    { weekday: "short", month: "short", day: "numeric" },
+                  )
+                : null;
+
+              return (
+                <DayColumn key={dayIdx} dayIdx={dayIdx}>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-display font-semibold">
+                      Day {dayIdx + 1}{" "}
+                      {date && (
+                        <span className="ml-2 text-sm font-normal text-muted-foreground">
+                          {date}
+                        </span>
+                      )}
+                    </h3>
+                    <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
+                      <Plus className="mr-1 h-3 w-3" /> Block
+                    </Button>
+                  </div>
+
+                  {blockDay === dayIdx && (
+                    <div className="mb-3 flex gap-2">
+                      <Input
+                        placeholder="e.g. Relax, no plans"
+                        value={blockTitle}
+                        onChange={(e) => setBlockTitle(e.target.value)}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          if (blockTitle.trim()) {
+                            onAdd({
+                              kind: "block",
+                              title: blockTitle,
+                              cost_cents: 0,
+                              day_index: dayIdx,
+                            });
+                            setBlockTitle("");
+                            setBlockDay(null);
+                          }
+                        }}
+                      >
+                        Add
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setBlockDay(null);
+                          setBlockTitle("");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   )}
-                </h3>
-                <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
-                  <Plus className="mr-1 h-3 w-3" /> Block
-                </Button>
-              </div>
 
-              {blockDay === dayIdx && (
-                <div className="mb-3 flex gap-2">
-                  <Input
-                    placeholder="e.g. Relax, no plans"
-                    value={blockTitle}
-                    onChange={(e) => setBlockTitle(e.target.value)}
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      if (blockTitle.trim()) {
-                        onAdd({
-                          kind: "block",
-                          title: blockTitle,
-                          cost_cents: 0,
-                          day_index: dayIdx,
-                        });
-                        setBlockTitle("");
-                        setBlockDay(null);
-                      }
-                    }}
+                  {advice?.day === dayIdx && (
+                    <div
+                      className="mb-3 flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3"
+                      data-testid="advisor-note"
+                    >
+                      <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
+                      <p className="flex-1 text-sm">{advice.note}</p>
+                      <button
+                        onClick={onDismissAdvice}
+                        aria-label="Dismiss suggestion"
+                        data-testid="advisor-dismiss"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {dayItems.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      Nothing scheduled. Add a block above, or drag an item here.
+                    </p>
+                  )}
+
+                  <SortableContext
+                    items={dayItems.map((i) => i.id)}
+                    strategy={verticalListSortingStrategy}
                   >
-                    Add
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setBlockDay(null);
-                      setBlockTitle("");
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              )}
+                    <div className="space-y-2">
+                      {dayItems.map((it) => (
+                        <SortableRow key={it.id} item={it} onRemove={onRemove} />
+                      ))}
+                    </div>
+                  </SortableContext>
+                </DayColumn>
+              );
+            })}
+          </div>
 
-              {advice?.day === dayIdx && (
-                <div
-                  className="mb-3 flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3"
-                  data-testid="advisor-note"
-                >
-                  <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
-                  <p className="flex-1 text-sm">{advice.note}</p>
-                  <button
-                    onClick={onDismissAdvice}
-                    aria-label="Dismiss suggestion"
-                    data-testid="advisor-dismiss"
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              )}
-
-              {dayItems.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  Nothing scheduled. Add a block above, or drag an item here.
-                </p>
-              )}
-
-              <SortableContext
-                items={dayItems.map((i) => i.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                <div className="space-y-2">
-                  {dayItems.map((it) => (
-                    <SortableRow key={it.id} item={it} onRemove={onRemove} />
-                  ))}
-                </div>
-              </SortableContext>
-            </DayColumn>
-          );
-        })}
+          <div className="space-y-3">{dayPanel}</div>
+        </div>
 
         <DragOverlay>{dragging ? <ItemRow item={dragging} dragging /> : null}</DragOverlay>
       </DndContext>
     </div>
+  );
+}
+
+function DayTab({
+  dayIdx,
+  active,
+  count,
+  startDate,
+  onSelect,
+}: {
+  dayIdx: number;
+  active: boolean;
+  count: number;
+  startDate: string | null;
+  onSelect: () => void;
+}) {
+  // `daytab-` not `day-`: the selected day renders a tab AND a column, and two
+  // droppables sharing one id break dnd-kit's registry.
+  const { setNodeRef, isOver } = useDroppable({ id: `daytab-${dayIdx}` });
+  const date = startDate
+    ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      })
+    : null;
+  return (
+    <button
+      ref={setNodeRef}
+      onClick={onSelect}
+      aria-current={active ? "page" : undefined}
+      data-testid={`day-tab-${dayIdx}`}
+      className={`rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
+        isOver
+          ? "border-primary bg-primary/10"
+          : active
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-border bg-card hover:border-primary"
+      }`}
+    >
+      <span className="font-medium">Day {dayIdx + 1}</span>
+      {date && <span className="ml-2 text-xs opacity-80">{date}</span>}
+      <span className="ml-2 text-xs opacity-70">
+        {count} {count === 1 ? "item" : "items"}
+      </span>
+    </button>
   );
 }
 

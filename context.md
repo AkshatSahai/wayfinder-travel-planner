@@ -193,6 +193,39 @@ requirement; the spec only required that the *itinerary* not change. Flipping it
 regardless of scheduling state. Routing it through `committedItems()` made staging ten activities
 still show the task as outstanding.
 
+### Itinerary day view: droppable ids and collision detection (v0.5.0 A5)
+
+The Itinerary tab shows one day at a time (tabs + list on the left, map on the right). Two
+non-obvious things make dragging across days work:
+
+- **Day tabs use `daytab-N`, day columns use `day-N`.** The selected day renders *both*, and two
+  droppables registered under one id break dnd-kit's registry — drops onto tabs silently did
+  nothing. `resolveTargetDay` handles both prefixes (check `daytab-` first; `"daytab-2"` does not
+  start with `"day-"`, so order is safe either way, but be explicit).
+- **Collision detection is `pointerWithin` with a `closestCorners` fallback**, not `closestCorners`
+  alone. `closestCorners` compares the *dragged row's* rectangle, and an itinerary row is far wider
+  than a day tab — its corners overlap the neighbouring tab even with the pointer dead-centre, so
+  drops landed one day off, reproducibly. The fallback is still needed for empty day columns, where
+  the pointer may be inside no droppable at all.
+
+`dayPlan` (route + notes) is cached on `(tripId, dayIndex, stop signature)` with
+`staleTime: Infinity`, so flipping between day tabs replays from cache — verified as 0 extra calls
+across 6 re-visits.
+
+⚠️ **Google publishes no "popular times" through any Places API tier** (checked against the
+data-fields reference). Opening hours exist but only on the **Enterprise** SKU. So day notes are
+split by provenance and labelled: **Live · Google** restates values Google actually returned
+(rating, review count, editorial summary — all already in the field mask, no extra cost), and
+**Guidance** is model-written. Never label model output as live data, and don't re-attempt popular
+times.
+
+⚠️ **`http://localhost:8080` is not on the Maps browser key's referrer allowlist**, so the day map
+shows its "Map key was rejected" fallback in local dev (`RefererNotAllowedMapError` in console).
+The app handles this correctly; it is a key-config gap, not a code bug. Add
+`http://localhost:8080/*` to the key's allowed referrers to see maps locally. Note Static Maps
+accepting a spoofed `Referer` header is *not* evidence the JS API will accept an origin — they
+match differently.
+
 ### The drag advisor never calls the AI speculatively (v0.5.0 A4)
 
 `assessDay()` in `src/lib/itinerary-advice.ts` is a pure local heuristic pass that runs after a

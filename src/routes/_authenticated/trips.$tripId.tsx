@@ -45,6 +45,7 @@ import { LodgingPanel } from "@/components/travel/lodging-panel";
 import { TransportPanel } from "@/components/travel/transport-panel";
 import { ActivitiesPanel } from "@/components/travel/activities-panel";
 import { ItineraryPanel, type ItemMove } from "@/components/travel/itinerary-panel";
+import { ItineraryDayPanel } from "@/components/travel/itinerary-day-panel";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
 import { ShareTripDialog } from "@/components/travel/share-trip-dialog";
 import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
@@ -800,6 +801,16 @@ function WorkspacePage() {
                 },
               }}
               advice={advice}
+              renderDayPanel={(dayIdx) => (
+                <ItineraryDayPanel
+                  tripId={tripId}
+                  destination={destination}
+                  dayIndex={dayIdx}
+                  items={committedItems(items)
+                    .filter((i) => i.day_index === dayIdx)
+                    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))}
+                />
+              )}
               onDismissAdvice={() => {
                 if (advice) dismissedRef.current.add(advice.itemId);
                 setAdvice(null);

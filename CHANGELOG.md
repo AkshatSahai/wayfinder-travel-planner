@@ -116,9 +116,35 @@ lands next.
 - _For everyone:_ Nothing looks different — photos load exactly as before. Behind the scenes our
   Google key is no longer handed to every visitor's browser.
 
+**Itinerary tab redesign — day tabs and a route map**
+
+- _Technical:_ The stacked all-days view is replaced by day tabs plus a single day's list, with a
+  map for the selected day beside it. New `getRouteForCoords` in `osrm.server.ts` routes a day's
+  stops from stored coordinates — deliberately separate from `getDrivingRoute`, which geocodes
+  place-name strings through Nominatim at ~1 req/s and would be rate-limited by a six-stop day — and
+  returns full road geometry, drawn as a polyline. A new `dayPlan` server fn combines that route
+  with notes, cached on the day's stop signature so switching tabs replays from cache instead of
+  re-billing an AI call. Day tabs are drop targets under a `daytab-` id namespace (sharing `day-`
+  with the columns broke dnd-kit's registry), and collision detection moved to `pointerWithin` with
+  a `closestCorners` fallback — the old geometry-only mode compared the wide dragged row and landed
+  drops one day off.
+- _For everyone:_ The Itinerary tab now shows one day at a time with tabs across the top, and a map
+  of that day beside the list showing your stops in order and roughly how much driving the day
+  involves. Drag an item onto another day's tab to move it there. Stops without a saved location are
+  listed under the map rather than quietly disappearing.
+
+**Day notes tell you what's data and what's advice**
+
+- _Technical:_ Notes carry a provenance badge. **Live · Google** restates values Google actually
+  returned (rating, review count, editorial summary — all already in the existing field mask, so no
+  new cost or SKU tier). **Guidance** is model-written. Google publishes no popular-times data
+  through any Places API tier, and opening hours sit on the Enterprise SKU, so nothing model-written
+  is ever presented as measured.
+- _For everyone:_ Each note is labelled, so you can tell a real Google rating from an AI suggestion
+  about when to go.
+
 #### Upcoming
 
-- A day-by-day itinerary map with routes.
 - Realtime sync for shared trips, change notifications, and an activity feed.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 
