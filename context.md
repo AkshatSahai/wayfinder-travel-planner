@@ -313,6 +313,48 @@ than failing the build.
 The model returns a wall-clock `"HH:MM"`; `start_time` is a timestamp column, so it is only
 meaningful once combined with that day's real date — see `timestampFor` in `buildMut`.
 
+### Live sync: two channels, because item rows can't say who changed them
+
+`useTripRealtime` (`src/hooks/use-trip-realtime.ts`) owns the one subscription per open trip.
+Freshness and attribution deliberately come from **different tables**:
+
+| Concern | Source | Why |
+|---|---|---|
+| Refresh the workspace (B1) | `postgres_changes` on `trips` + `trip_items` | Any change should refresh; who did it is irrelevant |
+| "Sarah moved X" (B2/B3) | `postgres_changes` on `trip_activity` | Only these rows carry a trustworthy actor |
+
+⚠️ **Don't try to attribute a change from a `trip_items` payload.** `trip_items.user_id` is creator
+provenance (§ above): on an UPDATE it still holds whoever first created the row, not whoever just
+moved it. Notifications built on it would credit the wrong person.
+
+Three things that fail *silently* if omitted:
+
+1. **`realtime.setAuth(token)` before subscribing.** The socket authenticates separately from
+   PostgREST. Without it, RLS-protected `postgres_changes` deliver nothing — and the channel still
+   reports `SUBSCRIBED`.
+2. **Re-apply the token on `TOKEN_REFRESHED`.** Supabase rotates access tokens; the socket keeps
+   whichever it was given, so a long-lived tab goes deaf partway through a session.
+3. **`removeChannel` on unmount / trip change.** Otherwise switching trips leaks subscriptions and
+   every later change fires N refetches.
+
+Row events are debounced (250ms) because one drag rewrites several rows and Postgres emits one
+event each — the traveler did one thing and needs one refetch. Activity events are **not** debounced;
+each is a distinct action.
+
+### Activity is logged per INTENT, not per row
+
+Mutating server fns in `trips.functions.ts` take an optional `activity` descriptor. One user action
+→ one `trip_activity` row → one toast and one feed entry, even when the action rewrote a dozen rows.
+Logging per changed row would make both the toast stream and the feed useless; a single drag would
+fire five notifications. Callers doing internal bookkeeping (renumbering a day, applying an AI plan)
+omit it deliberately.
+
+`logActivity` is fire-and-forget: a failure is logged server-side and swallowed. **An audit trail
+must never be able to fail the edit it describes.**
+
+The actor's email is denormalised into `details.actor_email` from the JWT claims at write time, so
+rendering the feed needs no admin lookup per row.
+
 ### The activity feed is append-only, and attribution is enforced by RLS
 
 `trip_activity` (migration `20260817000000`) backs the B3 change feed. Two deliberate properties:

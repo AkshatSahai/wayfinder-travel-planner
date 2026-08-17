@@ -16,6 +16,62 @@ const tripInsertSchema = z.object({
 
 const tripUpdateSchema = tripInsertSchema.extend({ id: z.string().uuid() });
 
+/**
+ * Optional description of what the traveler actually did, logged to
+ * `trip_activity` for the notification toast (B2) and the change feed (B3).
+ *
+ * Deliberately per-INTENT, not per-row. One drag or one AI build-out rewrites
+ * many rows; logging each would produce a dozen toasts and an unreadable feed.
+ * Callers doing internal bookkeeping (renumbering a day, applying a plan) simply
+ * omit it.
+ */
+const activitySchema = z.object({
+  trip_id: z.string().uuid(),
+  action: z.enum(["added", "removed", "moved", "updated"]),
+  item_type: z.string().max(60).nullable().optional(),
+  item_name: z.string().max(300).nullable().optional(),
+});
+
+type ActivityIntent = z.infer<typeof activitySchema>;
+
+type AuthedContext = {
+  supabase: {
+    from: (table: string) => {
+      insert: (values: unknown) => Promise<{ error: { message: string } | null }>;
+    };
+  };
+  userId: string;
+  claims?: Record<string, unknown>;
+};
+
+/**
+ * Fire-and-forget. An audit trail must never be able to fail the edit it is
+ * describing, so a logging failure is reported to the server console and
+ * swallowed rather than thrown.
+ *
+ * Uses the caller's own supabase client, so `auth.uid()` satisfies the RLS
+ * check that pins `actor_id` — a forged actor is rejected by the database, not
+ * by trust in this function.
+ */
+async function logActivity(context: AuthedContext, intent: ActivityIntent | undefined) {
+  if (!intent) return;
+  try {
+    const email = typeof context.claims?.email === "string" ? context.claims.email : null;
+    const { error } = await context.supabase.from("trip_activity").insert({
+      trip_id: intent.trip_id,
+      actor_id: context.userId,
+      action: intent.action,
+      item_type: intent.item_type ?? null,
+      item_name: intent.item_name ?? null,
+      // Denormalised so the feed and toasts need no admin lookup per row.
+      details: email ? { actor_email: email } : null,
+    });
+    if (error) console.error("[activity] insert failed:", error.message);
+  } catch (err) {
+    console.error("[activity] insert threw:", err);
+  }
+}
+
 const itemInsertSchema = z.object({
   trip_id: z.string().uuid(),
   kind: z.enum(["lodging", "transport", "activity", "block"]),
@@ -101,23 +157,30 @@ export const getTrip = createServerFn({ method: "POST" })
 
 export const addTripItem = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => itemInsertSchema.parse(d))
+  .inputValidator((d: unknown) =>
+    itemInsertSchema.extend({ activity: activitySchema.optional() }).parse(d),
+  )
   .handler(async ({ data, context }) => {
+    const { activity, ...item } = data;
     const { data: row, error } = await context.supabase
       .from("trip_items")
-      .insert({ ...data, user_id: context.userId })
+      .insert({ ...item, user_id: context.userId })
       .select("*")
       .single();
     if (error) throw new Error(error.message);
+    await logActivity(context as unknown as AuthedContext, activity);
     return { item: row };
   });
 
 export const removeTripItem = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) =>
+    z.object({ id: z.string().uuid(), activity: activitySchema.optional() }).parse(d),
+  )
   .handler(async ({ data, context }) => {
     const { error } = await context.supabase.from("trip_items").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
+    await logActivity(context as unknown as AuthedContext, data.activity);
     return { ok: true };
   });
 
@@ -161,7 +224,14 @@ export const updateTripItem = createServerFn({ method: "POST" })
  */
 export const updateTripItems = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ patches: z.array(itemPatchSchema).max(200) }).parse(d))
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        patches: z.array(itemPatchSchema).max(200),
+        activity: activitySchema.optional(),
+      })
+      .parse(d),
+  )
   .handler(async ({ data, context }) => {
     const results = await Promise.all(
       data.patches.map(async ({ id, ...patch }) => {
@@ -173,5 +243,23 @@ export const updateTripItems = createServerFn({ method: "POST" })
     if (failed.length === results.length && failed.length > 0) {
       throw new Error(`No items could be updated: ${failed[0].error}`);
     }
+    // One entry for the whole batch — this is exactly the case that would
+    // otherwise emit a dozen near-identical notifications for one drag.
+    await logActivity(context as unknown as AuthedContext, data.activity);
     return { updated: results.length - failed.length, failed };
+  });
+
+/** Newest-first change feed for one trip. RLS restricts it to trip members. */
+export const listTripActivity = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ trip_id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { data: rows, error } = await context.supabase
+      .from("trip_activity")
+      .select("id,trip_id,actor_id,action,item_type,item_name,details,created_at")
+      .eq("trip_id", data.trip_id)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) throw new Error(error.message);
+    return { activity: rows ?? [] };
   });

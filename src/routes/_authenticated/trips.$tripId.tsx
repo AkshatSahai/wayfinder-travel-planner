@@ -15,6 +15,9 @@ import {
   updateTripItem,
   updateTripItems,
 } from "@/lib/trips.functions";
+import { useTripRealtime } from "@/hooks/use-trip-realtime";
+import { describeActivity } from "@/lib/activity-format";
+import { ActivityFeedDialog, ActivityFeedButton } from "@/components/travel/activity-feed-dialog";
 import {
   buildItinerary,
   chatItinerary,
@@ -121,6 +124,7 @@ function WorkspacePage() {
   const setTab = (t: WorkspaceTab) => navigate({ search: { tab: t }, replace: true });
   const { user } = authRoute.useRouteContext();
   const [shareOpen, setShareOpen] = useState(false);
+  const [feedOpen, setFeedOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   // At most one advisor note is ever visible — see runAdvisor for the rest of
   // the anti-nag rules.
@@ -147,6 +151,22 @@ function WorkspacePage() {
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["trip", tripId] });
 
+  // Live sync + collaborator notifications. Everything funnels through the same
+  // invalidate() chokepoint the mutations already use — realtime is a new
+  // *trigger* for refreshing, not a second way of doing it.
+  useTripRealtime({
+    tripId,
+    onTripChanged: invalidate,
+    onActivity: (row) => {
+      // Never tell someone about their own edit. This is the whole reason
+      // notifications read trip_activity rather than trip_items: an item row's
+      // user_id is creator provenance, so it cannot say who made *this* change.
+      if (row.actor_id === user.id) return;
+      qc.invalidateQueries({ queryKey: ["trip-activity", tripId] });
+      toast(describeActivity(row), { duration: 6000 });
+    },
+  });
+
   const updateMut = useMutation({
     mutationFn: (patch: Record<string, unknown>) => updateFn({ data: { id: tripId, ...patch } }),
     onSuccess: invalidate,
@@ -167,7 +187,18 @@ function WorkspacePage() {
     sort_order?: number;
   };
   const addMut = useMutation({
-    mutationFn: (item: NewItem) => addFn({ data: item }),
+    mutationFn: (item: NewItem) =>
+      addFn({
+        data: {
+          ...item,
+          activity: {
+            trip_id: tripId,
+            action: "added" as const,
+            item_type: item.kind,
+            item_name: item.title,
+          },
+        },
+      }),
     onSuccess: (_res, item) => {
       invalidate();
       // Three destinations, three different messages — telling someone their
@@ -180,7 +211,20 @@ function WorkspacePage() {
   });
 
   const removeMut = useMutation({
-    mutationFn: (id: string) => removeFn({ data: { id } }),
+    mutationFn: (id: string) =>
+      removeFn({
+        data: {
+          id,
+          activity: {
+            trip_id: tripId,
+            action: "removed" as const,
+            item_type: data?.items.find((i) => i.id === id)?.kind ?? null,
+            // Capture the title before the row is gone — the feed entry has to
+            // outlive the thing it describes.
+            item_name: data?.items.find((i) => i.id === id)?.title ?? null,
+          },
+        },
+      }),
     onSuccess: invalidate,
   });
 
@@ -564,12 +608,24 @@ function WorkspacePage() {
   });
 
   const reorderMut = useMutation({
-    mutationFn: (moves: ItemMove[]) =>
-      Promise.all(
-        moves.map((m) =>
-          updateItemFn({ data: { id: m.id, day_index: m.day_index, sort_order: m.sort_order } }),
-        ),
-      ),
+    // Batched so the whole drag logs ONE activity entry rather than one per
+    // shifted row — a five-row day would otherwise fire five notifications.
+    mutationFn: (payload: { moves: ItemMove[]; movedTitle: string | null }) =>
+      updateItemsFn({
+        data: {
+          patches: payload.moves.map((m) => ({
+            id: m.id,
+            day_index: m.day_index,
+            sort_order: m.sort_order,
+          })),
+          activity: {
+            trip_id: tripId,
+            action: "moved" as const,
+            item_type: "itinerary",
+            item_name: payload.movedTitle,
+          },
+        },
+      }),
     onSuccess: invalidate,
     onError: (err: Error) => toast.error(err.message),
   });
@@ -703,6 +759,7 @@ function WorkspacePage() {
               onEditBudget={(cents) => updateMut.mutate({ budget_cents: cents })}
             />
             <div className="flex items-center gap-3">
+              <ActivityFeedButton onClick={() => setFeedOpen(true)} />
               {trip.user_id === user.id && (
                 <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
                   <Share2 className="mr-1 h-4 w-4" /> Share
@@ -718,6 +775,7 @@ function WorkspacePage() {
           </div>
 
           <ShareTripDialog tripId={tripId} open={shareOpen} onOpenChange={setShareOpen} />
+          <ActivityFeedDialog tripId={tripId} open={feedOpen} onOpenChange={setFeedOpen} />
 
           <MissingFieldsBanner trip={trip} onSave={(patch) => updateMut.mutate(patch)} />
 
@@ -818,7 +876,10 @@ function WorkspacePage() {
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
               onReorder={(moves, moved) => {
-                reorderMut.mutate(moves);
+                reorderMut.mutate({
+                  moves,
+                  movedTitle: moved ? (items.find((i) => i.id === moved.id)?.title ?? null) : null,
+                });
                 // Deliberately not awaited: the drag is already persisting, and
                 // advice must never gate or delay it.
                 if (moved) void runAdvisor(moves, moved);

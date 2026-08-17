@@ -121,6 +121,52 @@ export type Database = {
       // Hand-added ahead of a `supabase gen types typescript` regeneration —
       // see context.md §3 (trip sharing). Replace with the real generated
       // block once the migration has been applied and types regenerated.
+      //
+      // trip_activity joins them as of v0.5.0 B3 (migration
+      // 20260817000000_realtime_and_activity_feed.sql, applied 2026-08-17).
+      trip_activity: {
+        Row: {
+          id: string;
+          trip_id: string;
+          actor_id: string;
+          action: string;
+          item_type: string | null;
+          item_name: string | null;
+          details: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          trip_id: string;
+          actor_id: string;
+          action: string;
+          item_type?: string | null;
+          item_name?: string | null;
+          details?: Json;
+          created_at?: string;
+        };
+        // No Update in practice: the table is append-only and has no UPDATE
+        // policy. Typed for completeness only.
+        Update: {
+          id?: string;
+          trip_id?: string;
+          actor_id?: string;
+          action?: string;
+          item_type?: string | null;
+          item_name?: string | null;
+          details?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "trip_activity_trip_id_fkey";
+            columns: ["trip_id"];
+            isOneToOne: false;
+            referencedRelation: "trips";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       trip_collaborators: {
         Row: {
           id: string;
