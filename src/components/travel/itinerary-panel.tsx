@@ -21,7 +21,17 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X, Plus, Bed, Car, Sparkles, Coffee, GripVertical, SendHorizonal } from "lucide-react";
+import {
+  X,
+  Plus,
+  Bed,
+  Car,
+  Sparkles,
+  Coffee,
+  GripVertical,
+  SendHorizonal,
+  Lightbulb,
+} from "lucide-react";
 import { formatMoney, committedItems } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -54,8 +64,15 @@ interface Props {
     day_index: number;
   }) => void;
   onRemove: (id: string) => void;
-  /** Persists a drag: the moved item plus any siblings whose order shifted. */
-  onReorder: (moves: ItemMove[]) => void;
+  /**
+   * Persists a drag: the moved item plus any siblings whose order shifted.
+   * `moved` describes what the traveler actually dragged, so an advisory check
+   * can run afterwards without re-deriving it.
+   */
+  onReorder: (moves: ItemMove[], moved?: { id: string; fromDay: number; toDay: number }) => void;
+  /** At most one advisory note, or null. */
+  advice: { day: number; itemId: string; note: string } | null;
+  onDismissAdvice: () => void;
 }
 
 export function ItineraryPanel({
@@ -63,6 +80,8 @@ export function ItineraryPanel({
   numDays,
   startDate,
   chat,
+  advice,
+  onDismissAdvice,
   onAdd,
   onRemove,
   onReorder,
@@ -138,7 +157,10 @@ export function ItineraryPanel({
         : source.findIndex((i) => i.id === overId);
       if (oldIndex === newIndex || newIndex < 0) return;
       const next = arrayMove(source, oldIndex, newIndex);
-      onReorder(next.map((i, idx) => ({ id: i.id, day_index: toDay, sort_order: idx })));
+      onReorder(
+        next.map((i, idx) => ({ id: i.id, day_index: toDay, sort_order: idx })),
+        { id: activeId, fromDay, toDay },
+      );
       return;
     }
 
@@ -152,10 +174,13 @@ export function ItineraryPanel({
     target.splice(insertAt, 0, moved);
 
     const remaining = source.filter((i) => i.id !== activeId);
-    onReorder([
-      ...target.map((i, idx) => ({ id: i.id, day_index: toDay, sort_order: idx })),
-      ...remaining.map((i, idx) => ({ id: i.id, day_index: fromDay, sort_order: idx })),
-    ]);
+    onReorder(
+      [
+        ...target.map((i, idx) => ({ id: i.id, day_index: toDay, sort_order: idx })),
+        ...remaining.map((i, idx) => ({ id: i.id, day_index: fromDay, sort_order: idx })),
+      ],
+      { id: activeId, fromDay, toDay },
+    );
   };
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -287,6 +312,24 @@ export function ItineraryPanel({
                   >
                     Cancel
                   </Button>
+                </div>
+              )}
+
+              {advice?.day === dayIdx && (
+                <div
+                  className="mb-3 flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3"
+                  data-testid="advisor-note"
+                >
+                  <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
+                  <p className="flex-1 text-sm">{advice.note}</p>
+                  <button
+                    onClick={onDismissAdvice}
+                    aria-label="Dismiss suggestion"
+                    data-testid="advisor-dismiss"
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
               )}
 

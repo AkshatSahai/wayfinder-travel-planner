@@ -15,9 +15,16 @@ import {
   updateTripItem,
   updateTripItems,
 } from "@/lib/trips.functions";
-import { buildItinerary, chatItinerary, type ItineraryOp } from "@/lib/trip-ai.functions";
+import {
+  buildItinerary,
+  chatItinerary,
+  adviseItineraryChange,
+  type ItineraryOp,
+} from "@/lib/trip-ai.functions";
+import { assessDay, averageDayCost } from "@/lib/itinerary-advice";
 import {
   daysBetween,
+  committedItems,
   isBookedLodging,
   isLodgingCandidate,
   isStagedActivity,
@@ -43,6 +50,11 @@ import { ShareTripDialog } from "@/components/travel/share-trip-dialog";
 import type { ParsedTrip } from "@/components/travel/destination-picker-dialog";
 
 const authRoute = getRouteApi("/_authenticated");
+
+/** Advisor calls allowed per page session, so a long editing spree can't run up a bill. */
+const ADVISOR_CALL_BUDGET = 8;
+
+export type AdviceNote = { day: number; itemId: string; note: string };
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -109,6 +121,12 @@ function WorkspacePage() {
   const { user } = authRoute.useRouteContext();
   const [shareOpen, setShareOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // At most one advisor note is ever visible — see runAdvisor for the rest of
+  // the anti-nag rules.
+  const [advice, setAdvice] = useState<AdviceNote | null>(null);
+  const advisorCallsRef = useRef(0);
+  const lastAdvisedRef = useRef<string | null>(null);
+  const dismissedRef = useRef<Set<string>>(new Set());
 
   const qc = useQueryClient();
   const getFn = useServerFn(getTrip);
@@ -119,6 +137,7 @@ function WorkspacePage() {
   const updateItemsFn = useServerFn(updateTripItems);
   const buildFn = useServerFn(buildItinerary);
   const chatFn = useServerFn(chatItinerary);
+  const adviseFn = useServerFn(adviseItineraryChange);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["trip", tripId],
@@ -554,6 +573,76 @@ function WorkspacePage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  /**
+   * Second opinion on a manual drag. Deliberately fire-and-forget: it runs after
+   * the reorder has already been persisted, never blocks or delays it, and any
+   * failure is swallowed — an advisory feature must not turn a successful drag
+   * into an error.
+   */
+  const runAdvisor = async (
+    moves: ItemMove[],
+    moved: { id: string; fromDay: number; toDay: number },
+  ) => {
+    const movedId = moved.id;
+    if (advisorCallsRef.current >= ADVISOR_CALL_BUDGET) return;
+    if (dismissedRef.current.has(movedId)) return;
+    // Nudging about the same item on consecutive drags is the definition of naggy.
+    if (lastAdvisedRef.current === movedId) return;
+
+    // Assess the POST-drag arrangement. The query cache still holds pre-drag
+    // state at this point (the reorder is only just being persisted), so the
+    // moved item would not yet appear on its new day — project the moves over
+    // the current items instead of waiting for a refetch.
+    const moveById = new Map(moves.map((m) => [m.id, m]));
+    const projected = committedItems(data?.items ?? []).map((i) => {
+      const m = moveById.get(i.id);
+      return m ? { ...i, day_index: m.day_index, sort_order: m.sort_order } : i;
+    });
+
+    const dayItems = projected
+      .filter((i) => i.day_index === moved.toDay)
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map((i) => {
+        const d = (i.details ?? {}) as Record<string, unknown>;
+        return {
+          id: i.id,
+          title: i.title,
+          category: i.category,
+          cost_cents: i.cost_cents ?? 0,
+          minutes: minutesFromTimestamp(i.start_time),
+          duration_hours: (d.duration_hours as number) ?? null,
+          coords: (d.coords as LatLng) ?? null,
+        };
+      });
+
+    const signals = assessDay(dayItems, movedId, averageDayCost(projected));
+    // The whole point of the local pass: no signal, no network call at all.
+    if (signals.length === 0) return;
+
+    advisorCallsRef.current += 1;
+    lastAdvisedRef.current = movedId;
+    try {
+      const res = await adviseFn({
+        data: {
+          destination: data?.trip.destination ?? "",
+          moved_title: dayItems.find((i) => i.id === movedId)?.title ?? "",
+          from_day: moved.fromDay,
+          to_day: moved.toDay,
+          signals,
+          day_summary: dayItems.map(
+            (i) =>
+              `${i.title}${i.minutes != null ? ` at ${String(Math.floor(i.minutes / 60)).padStart(2, "0")}:${String(i.minutes % 60).padStart(2, "0")}` : ""}` +
+              `${i.cost_cents ? ` ($${Math.round(i.cost_cents / 100)})` : ""}`,
+          ),
+        },
+      });
+      if (res.surface && res.note) setAdvice({ day: moved.toDay, itemId: movedId, note: res.note });
+    } catch (err) {
+      // Advice is optional; the drag already succeeded.
+      console.error("[advisor] skipped:", err);
+    }
+  };
+
   if (isLoading) return <div className="p-10 text-muted-foreground">Loading trip…</div>;
   if (error || !data?.trip) throw notFound();
 
@@ -710,9 +799,19 @@ function WorkspacePage() {
                   chatMut.mutate(next);
                 },
               }}
+              advice={advice}
+              onDismissAdvice={() => {
+                if (advice) dismissedRef.current.add(advice.itemId);
+                setAdvice(null);
+              }}
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
-              onReorder={(moves) => reorderMut.mutate(moves)}
+              onReorder={(moves, moved) => {
+                reorderMut.mutate(moves);
+                // Deliberately not awaited: the drag is already persisting, and
+                // advice must never gate or delay it.
+                if (moved) void runAdvisor(moves, moved);
+              }}
             />
           )}
         </div>

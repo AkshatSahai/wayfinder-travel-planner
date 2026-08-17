@@ -632,6 +632,71 @@ ${lines}`,
     };
   });
 
+// -------- Drag advisor (second opinion on a manual edit) --------
+
+const MAX_NOTE_CHARS = 160;
+
+/**
+ * Called ONLY when a local heuristic has already fired — see
+ * `src/lib/itinerary-advice.ts`. The model's job is to judge whether the
+ * detected signal is genuinely worth interrupting the traveler about and, if so,
+ * to phrase it in one plain sentence. It is expected to decline often; a note on
+ * every drag is the failure mode this feature has to avoid.
+ */
+export const adviseItineraryChange = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        destination: z.string(),
+        moved_title: z.string().max(300),
+        from_day: z.number().int().nullable(),
+        to_day: z.number().int(),
+        signals: z
+          .array(z.object({ code: z.string(), detail: z.string().max(400) }))
+          .min(1)
+          .max(6),
+        day_summary: z.array(z.string().max(300)).max(30),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const result = await generateStructured(
+      `A traveler just moved "${data.moved_title}" ${
+        data.from_day == null ? "onto" : `from day ${data.from_day + 1} to`
+      } day ${data.to_day + 1} of their ${data.destination} trip, by hand.
+
+Automated checks flagged:
+${data.signals.map((s) => `- ${s.detail}`).join("\n")}
+
+That day now reads:
+${data.day_summary.map((s, i) => `${i + 1}. ${s}`).join("\n") || "(empty)"}
+
+Decide whether this is worth telling them about.
+
+Set surface=false — and this is the common, expected answer — when the flag is
+technically true but not actually a problem: a long day they may well want, a
+drive that is obviously fine, a minor cost difference, anything a reasonable
+traveler would shrug at. Interrupting someone who is arranging their own trip is
+a cost; only pay it when the observation would genuinely change their mind.
+
+Set surface=true only for something they'd want to catch: a day that has become
+unrealistic, a big backtrack in driving, a timing conflict that will not work.
+
+"note" must be ONE sentence, under ${MAX_NOTE_CHARS} characters, plain English,
+no preamble, stating the issue and why it matters. Do not tell them to undo it.`,
+      z.object({ surface: z.boolean(), note: z.string() }),
+      "You are a restrained travel advisor. Most manual edits need no comment. Return JSON only.",
+    );
+
+    if (!result || !result.surface || !result.note?.trim()) {
+      return { surface: false, note: null as string | null };
+    }
+    // Hard cap regardless of what the model returned — an inline strip cannot
+    // absorb a paragraph.
+    const note = result.note.trim().slice(0, MAX_NOTE_CHARS);
+    return { surface: true, note };
+  });
+
 // -------- Itinerary chat (AI edits the plan directly) --------
 
 const MAX_OPS_PER_TURN = 20;
