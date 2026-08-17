@@ -84,9 +84,25 @@ lands next.
 - _For everyone:_ Your activity list no longer empties once you build the itinerary — it shows
   what's scheduled and what still needs a day, in one place.
 
+**A second opinion when you rearrange things yourself**
+
+- _Technical:_ New pure heuristic pass (`src/lib/itinerary-advice.ts`) runs client-side after a
+  drag — day length, longest hop via `haversineMiles` on stored coords, timed items out of order,
+  and per-day cost against the trip average. **Only a fired heuristic spends a Gemini call**
+  (`adviseItineraryChange`), which may still decline to surface; a benign drag makes no network
+  request at all, verified by counting requests off the wire. Anti-nag rules are enforced in code
+  rather than asked of the prompt: one visible note, no consecutive notes on the same item, a
+  dismissed item never returns, and a per-session call budget. The advisor assesses the projected
+  post-drag arrangement rather than the query cache, which still holds pre-drag state. Fire and
+  forget throughout — the drag persists first and is never blocked or failed by advice.
+- _For everyone:_ Move something to a different day and, occasionally, a short note appears
+  explaining why it might not work — a day that's become impossible to fit, a long detour, a
+  timing clash. It stays quiet the rest of the time, and you can dismiss any note.
+
 #### Upcoming
 
-- A day-by-day itinerary map with routes, and an AI second opinion when you drag things around.
+- A day-by-day itinerary map with routes.
+- Realtime sync for shared trips, change notifications, and an activity feed.
 - Realtime sync for shared trips, change notifications, and an activity feed.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 

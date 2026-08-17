@@ -59,6 +59,18 @@ this bites every time:
 Set **all four** locally or the app renders but every server function 401s and the workspace
 throws `notFound()` (a confusing 404 with no obvious cause).
 
+**`VITE_GOOGLE_MAPS_KEY` is referrer-restricted (verified live, 2026-08-17).** Google reports
+`REQUEST_DENIED — "API keys with referer restrictions cannot be used with this API"` on server-side
+REST calls, and Static Maps returns **403** for a disallowed origin while allowing
+`wayfinder-travel-planner.vercel.app` and `localhost:*`.
+
+⚠️ **What that does and does not buy you.** Static Maps still returned **200 with no `Referer`
+header at all**. HTTP-referrer restrictions constrain *browsers*, which always send a Referer; they
+cannot block a scripted request that simply omits one. So this stops the key being lifted from the
+JS bundle and reused on another website — the actual risk for a key that ships to the client — but
+it is **not** a hard security boundary. Per-API quota caps and billing alerts remain the real
+backstop. Don't read "restricted" as "safe from all abuse".
+
 Server-only keys, all optional — each provider degrades to a setup card when absent:
 `GOOGLE_API_KEY` (Places + Geocoding), `VITE_GOOGLE_MAPS_KEY` (browser Maps key),
 `DUFFEL_API_KEY` (flights), `EIA_API_KEY` (gas prices), `TICKETMASTER_API_KEY` (events).
@@ -153,6 +165,31 @@ requirement; the spec only required that the *itinerary* not change. Flipping it
 **Derived state that must count both:** the Trip Details "Add activities" task counts activities
 regardless of scheduling state. Routing it through `committedItems()` made staging ten activities
 still show the task as outstanding.
+
+### The drag advisor never calls the AI speculatively (v0.5.0 A4)
+
+`assessDay()` in `src/lib/itinerary-advice.ts` is a pure local heuristic pass that runs after a
+manual drag. **Only if it returns a signal does `adviseItineraryChange` call Gemini at all.** A
+drag that trips nothing costs nothing — no network request, verified by counting
+requests off the wire, not by "no note appeared".
+
+This gating is the point of the feature, not an optimisation. context.md's v0.2.1 entry records
+cascading retries exhausting the AI quota; an advisor that evaluated every drag would repeat it.
+
+Anti-nag rules live in code (`runAdvisor` in `trips.$tripId.tsx`), not in the prompt: one visible
+note at a time, no consecutive notes about the same item, a dismissed item never notifies again,
+and a per-session call budget (`ADVISOR_CALL_BUDGET`). The model is additionally told to return
+`surface: false` for anything a reasonable traveler would shrug at, and it does decline.
+
+⚠️ **The advisor must assess the POST-drag arrangement.** The React Query cache still holds
+pre-drag state when `onReorder` fires, so reading `data.items` finds the moved item still on its
+old day and every heuristic silently returns nothing — the whole feature looks broken while
+appearing to work. Project the `moves` array over the current items instead of waiting for a
+refetch.
+
+Advice is fire-and-forget: the drag persists first and is never blocked, delayed, or failed by the
+advisor. Notes are ephemeral React state, never persisted, so stale advice about a plan that has
+since changed cannot survive a reload.
 
 ### The Activities tab is the master list (v0.5.0 A3)
 
@@ -455,7 +492,17 @@ Production has these keys, so the quickest check is the live site.
 **Requested but not built**
 - **Realtime sync for shared trips (Phase 2)** — subscribe to Supabase `postgres_changes` on
   `trips`/`trip_items` filtered by `trip_id`, call the existing `invalidate()` chokepoint in
-  `trips.$tripId.tsx` from the event handler. No schema change needed, additive on top of v0.4.0.
+  `trips.$tripId.tsx` from the event handler.
+
+  ⚠️ **It does need a schema change, contrary to the earlier note here.** Probed live on
+  2026-08-17: a channel on `trip_items` reports `SUBSCRIBED` and then delivers **zero** events for
+  INSERT, UPDATE or DELETE, because the table is not in the `supabase_realtime` publication. A
+  `SUBSCRIBED` status proves nothing on its own — always confirm with an actual write. Required
+  before any Phase 2 work, applied by hand in the SQL editor per the DDL constraint above:
+  `ALTER PUBLICATION supabase_realtime ADD TABLE public.trip_items, public.trips;` plus
+  `REPLICA IDENTITY FULL` on both so DELETE payloads carry the row's title (needed for "X removed
+  Y" notifications), and `supabase.realtime.setAuth()` on the client so RLS applies to the socket.
+  The service-role key was never the only blocker.
 - **Presence indicator (Phase 3)** — "who's viewing this trip," ordered after Phase 2 since it
   needs the same realtime channel plumbing.
 - **Owner vs. shared badge** in `trips.index.tsx` — `listTrips` now also returns trips the user
@@ -480,10 +527,10 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
-- v0.5.0 verification test users still exist in Supabase auth (trips and items all deleted; only
-  the auth rows remain): `claude-a1-verify-a1run1@`, `claude-a2-verify-a2run1@`,
-  `claude-a2-verify-a2run2@`, `claude-a2-verify-a2run3@`, `claude-a3-verify-a3run1@`,
-  `claude-a3-verify-a3run2@` — all `@example.com`.
+- ~~Leftover `claude-*` verification users in Supabase auth.~~ **Done 2026-08-17** — all 10
+  (3 from v0.4.0, 7 from v0.5.0) deleted via `auth/v1/admin/users` with the service-role key, which
+  is now in `.env`. Zero `claude-*` accounts remain. Future test users can be scripted away the
+  same way rather than accumulating.
 - Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
   and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
   needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going
