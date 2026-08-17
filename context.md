@@ -154,6 +154,31 @@ requirement; the spec only required that the *itinerary* not change. Flipping it
 regardless of scheduling state. Routing it through `committedItems()` made staging ten activities
 still show the task as outstanding.
 
+### Itinerary building: the planner only sees staged activities
+
+`buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
+already on the itinerary. Two consequences that both bit during v0.5.0 A2:
+
+1. **The model numbers `sort_order` from 0 every time.** On a trip that already has items on a
+   day — including the booked lodging row — its assignments collide with them. Fixed by
+   renumbering *every* row on each affected day client-side after assignment
+   (`buildMut` in `trips.$tripId.tsx`), ordered by start time with untimed rows keeping their
+   prior relative order. **Don't apply the model's `sort_order` directly.** The symptom is two
+   rows sharing a `(day_index, sort_order)`, which makes intra-day order arbitrary and destabilises
+   the next drag.
+2. **The model is not trusted with completeness or range.** `day_index` is clamped to the trip's
+   day count, duplicate ids are dropped, and any activity the model omitted is appended rather
+   than silently lost.
+
+Enrichment (Places lookup for activities with no location/coords) runs *before* scheduling so
+grouping has real coordinates, and the result is written back onto the activity's `details` —
+`location` and `coords` are only filled when absent, never overwriting what the traveler typed.
+A missing `GOOGLE_API_KEY` or a Places outage degrades to scheduling without coordinates rather
+than failing the build.
+
+The model returns a wall-clock `"HH:MM"`; `start_time` is a timestamp column, so it is only
+meaningful once combined with that day's real date — see `timestampFor` in `buildMut`.
+
 ### Trip creation modes
 
 `parsed_params.entry_mode === "manual"` marks a manually-created trip. It drives:
@@ -418,8 +443,10 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
-- Test user `claude-a1-verify-a1run1@example.com` (v0.5.0 A1 verification) still exists in Supabase
-  auth. Its trip and all items were deleted; only the auth row remains.
+- Test users `claude-a1-verify-a1run1@example.com`, `claude-a2-verify-a2run1@example.com`,
+  `claude-a2-verify-a2run2@example.com`, `claude-a2-verify-a2run3@example.com` (v0.5.0
+  verification) still exist in Supabase auth. Their trips and items were deleted; only the auth
+  rows remain.
 - Test users `claude-manual-entry-verify@example.com`, `claude-share-owner-verify@example.com`,
   and `claude-share-collab-verify@example.com` still exist in Supabase auth. Deleting a user
   needs the `service_role` key (now set on Vercel as of v0.4.0, so this could be scripted going

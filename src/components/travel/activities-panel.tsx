@@ -62,6 +62,8 @@ interface Props {
   onAdd: (item: NewActivity) => void;
   onRemove: (id: string) => void;
   onBuildItinerary: () => void;
+  /** AI scheduling in flight — takes several seconds, so it must be visible. */
+  building: boolean;
 }
 
 export function ActivitiesPanel({
@@ -75,6 +77,7 @@ export function ActivitiesPanel({
   onAdd,
   onRemove,
   onBuildItinerary,
+  building,
 }: Props) {
   const fn = useServerFn(searchActivities);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>("All");
@@ -122,6 +125,7 @@ export function ActivitiesPanel({
         onRemove={onRemove}
         onBrowse={() => setBrowseOpen(true)}
         onBuildItinerary={onBuildItinerary}
+        building={building}
       />
 
       <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
@@ -362,12 +366,14 @@ function StagedList({
   onRemove,
   onBrowse,
   onBuildItinerary,
+  building,
 }: {
   staged: Item[];
   destination: string;
   onRemove: (id: string) => void;
   onBrowse: () => void;
   onBuildItinerary: () => void;
+  building: boolean;
 }) {
   return (
     <section className="rounded-2xl border border-border bg-card p-5 shadow-soft">
@@ -383,12 +389,12 @@ function StagedList({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onBrowse}>
+          <Button variant="outline" size="sm" onClick={onBrowse} disabled={building}>
             <Sparkles className="mr-1 h-4 w-4" /> Browse activities
           </Button>
           <Button
             size="sm"
-            disabled={staged.length === 0}
+            disabled={staged.length === 0 || building}
             onClick={onBuildItinerary}
             data-testid="build-itinerary-btn"
             title={
@@ -397,7 +403,8 @@ function StagedList({
                 : "Let AI arrange these into a day-by-day plan"
             }
           >
-            <CalendarRange className="mr-1 h-4 w-4" /> Build out itinerary
+            <CalendarRange className="mr-1 h-4 w-4" />
+            {building ? "Building…" : "Build out itinerary"}
           </Button>
         </div>
       </div>

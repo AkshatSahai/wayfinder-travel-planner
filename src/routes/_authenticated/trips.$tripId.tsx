@@ -13,10 +13,13 @@ import {
   addTripItem,
   removeTripItem,
   updateTripItem,
+  updateTripItems,
 } from "@/lib/trips.functions";
+import { buildItinerary } from "@/lib/trip-ai.functions";
 import {
   daysBetween,
   isBookedLodging,
+  isLodgingCandidate,
   isStagedActivity,
   stagedActivities,
   LODGING_BOOKED,
@@ -67,6 +70,8 @@ function WorkspacePage() {
   const addFn = useServerFn(addTripItem);
   const removeFn = useServerFn(removeTripItem);
   const updateItemFn = useServerFn(updateTripItem);
+  const updateItemsFn = useServerFn(updateTripItems);
+  const buildFn = useServerFn(buildItinerary);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["trip", tripId],
@@ -127,6 +132,180 @@ function WorkspacePage() {
     onSuccess: () => {
       invalidate();
       toast.success("Booked — added to your itinerary and budget");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  // "Build out itinerary": AI schedules every staged activity onto a day, and
+  // any location/coords it had to look up are written back onto the activity
+  // rather than used once and discarded.
+  const buildMut = useMutation({
+    mutationFn: async () => {
+      const trip = data!.trip;
+      const parsedP = (trip.parsed_params ?? {}) as Record<string, unknown>;
+      const staging = stagedActivities(data!.items);
+      if (staging.length === 0) throw new Error("Add at least one activity first.");
+
+      const booked = (data!.items ?? []).find(isBookedLodging);
+      const bookedDetails = (booked?.details ?? {}) as Record<string, unknown>;
+      // Undated trips have no real day count; fall back to something modest
+      // rather than one day per activity, which would produce a 50-day trip.
+      const days = daysBetween(trip.start_date, trip.end_date) || Math.min(staging.length, 7);
+
+      const res = await buildFn({
+        data: {
+          destination: trip.destination ?? "",
+          origin: (parsedP.origin as string) ?? null,
+          start_date: trip.start_date,
+          end_date: trip.end_date,
+          num_days: Math.max(1, days),
+          lodging: booked ? ((bookedDetails.location as string) ?? booked.title) : null,
+          activities: staging.map((a) => {
+            const d = (a.details ?? {}) as Record<string, unknown>;
+            const coords = (d.coords ?? null) as { lat: number; lng: number } | null;
+            return {
+              id: a.id,
+              title: a.title,
+              category: a.category,
+              cost_cents: a.cost_cents ?? 0,
+              location: (d.location as string) ?? null,
+              duration_hours: (d.duration_hours as number) ?? null,
+              preferred_date: (d.preferred_date as string) ?? null,
+              lat: coords?.lat ?? null,
+              lng: coords?.lng ?? null,
+            };
+          }),
+        },
+      });
+      if (res.error) throw new Error(res.error);
+
+      const enrichById = new Map(res.enrichments.map((e) => [e.id, e]));
+      const detailsById = new Map(
+        staging.map((a) => [a.id, (a.details ?? {}) as Record<string, unknown>]),
+      );
+
+      // The model returns a wall-clock "HH:MM"; the column is a timestamp, so it
+      // only becomes real once combined with that day's actual date.
+      const timestampFor = (dayIndex: number, hhmm: string | null): string | null => {
+        if (!hhmm || !trip.start_date) return null;
+        if (!/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+        const d = new Date(`${trip.start_date}T00:00:00`);
+        d.setDate(d.getDate() + dayIndex);
+        const [h, m] = hhmm.split(":");
+        return `${d.toISOString().slice(0, 10)}T${h.padStart(2, "0")}:${m}:00`;
+      };
+
+      const assignedIds = new Set(res.assignments.map((a) => a.id));
+      const affectedDays = new Set(res.assignments.map((a) => a.day_index));
+
+      // Minutes-since-midnight, used only to order a day sensibly.
+      const minutesOf = (hhmm: string | null): number | null => {
+        if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+        const [h, m] = hhmm.split(":").map(Number);
+        return h * 60 + m;
+      };
+      const minutesOfStamp = (ts: string | null): number | null => {
+        if (!ts) return null;
+        const d = new Date(ts);
+        return Number.isNaN(d.getTime()) ? null : d.getHours() * 60 + d.getMinutes();
+      };
+
+      // The planner only sees staged activities, so it numbers sort_order from 0
+      // and would collide with whatever is already on that day (including the
+      // booked stay). Renumber each affected day across ALL its rows, ordered by
+      // time where known, so positions stay unique and the day reads correctly.
+      type Row = {
+        id: string;
+        day_index: number;
+        minutes: number | null;
+        prior: number;
+        isNew: boolean;
+      };
+      const rowsByDay = new Map<number, Row[]>();
+      for (const day of affectedDays) rowsByDay.set(day, []);
+
+      for (const a of res.assignments) {
+        rowsByDay.get(a.day_index)!.push({
+          id: a.id,
+          day_index: a.day_index,
+          minutes: minutesOf(a.start_time),
+          prior: a.sort_order,
+          isNew: true,
+        });
+      }
+      for (const item of data!.items) {
+        if (assignedIds.has(item.id)) continue;
+        if (isLodgingCandidate(item) || isStagedActivity(item)) continue;
+        if (item.day_index == null || !affectedDays.has(item.day_index)) continue;
+        rowsByDay.get(item.day_index)!.push({
+          id: item.id,
+          day_index: item.day_index,
+          minutes: minutesOfStamp(item.start_time),
+          prior: item.sort_order ?? 0,
+          isNew: false,
+        });
+      }
+
+      const finalOrder = new Map<string, number>();
+      for (const [, rows] of rowsByDay) {
+        rows
+          .sort((x, y) => {
+            // Timed rows lead, in time order; untimed keep their prior order.
+            const mx = x.minutes ?? Number.MAX_SAFE_INTEGER;
+            const my = y.minutes ?? Number.MAX_SAFE_INTEGER;
+            return mx - my || x.prior - y.prior;
+          })
+          .forEach((r, i) => finalOrder.set(r.id, i));
+      }
+
+      type ItemPatch = {
+        id: string;
+        day_index?: number;
+        sort_order?: number;
+        start_time?: string;
+        details?: Record<string, unknown>;
+      };
+      const patches: ItemPatch[] = res.assignments.map((a): ItemPatch => {
+        const enrich = enrichById.get(a.id);
+        const base = detailsById.get(a.id) ?? {};
+        const stamp = timestampFor(a.day_index, a.start_time);
+        return {
+          id: a.id,
+          day_index: a.day_index,
+          sort_order: finalOrder.get(a.id) ?? a.sort_order,
+          ...(stamp ? { start_time: stamp } : {}),
+          details: {
+            ...base,
+            // Only fill what the activity was missing — never overwrite a
+            // location or coords the traveler supplied.
+            ...(enrich?.address && !base.location ? { location: enrich.address } : {}),
+            ...(enrich?.coords && !base.coords ? { coords: enrich.coords } : {}),
+            planner_reason: a.reason,
+          },
+        };
+      });
+
+      // Existing rows only need a patch when their position actually moved.
+      for (const [, rows] of rowsByDay) {
+        for (const r of rows) {
+          if (r.isNew) continue;
+          const next = finalOrder.get(r.id);
+          if (next != null && next !== r.prior) patches.push({ id: r.id, sort_order: next });
+        }
+      }
+
+      await updateItemsFn({ data: { patches } });
+      return res;
+    },
+    onSuccess: (res) => {
+      invalidate();
+      setTab("itinerary");
+      const enriched = res.enrichments.length;
+      toast.success(
+        `Itinerary built — ${res.assignments.length} activities scheduled` +
+          (enriched ? `, ${enriched} location${enriched === 1 ? "" : "s"} looked up` : ""),
+      );
+      if (res.enrichment_error) toast.info(res.enrichment_error);
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -274,9 +453,8 @@ function WorkspacePage() {
               autoBrowse={!isManualTrip}
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
-              onBuildItinerary={() =>
-                toast.info("AI itinerary building lands next — your activities are saved.")
-              }
+              onBuildItinerary={() => buildMut.mutate()}
+              building={buildMut.isPending}
             />
           )}
 

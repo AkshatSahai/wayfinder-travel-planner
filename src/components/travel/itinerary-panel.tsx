@@ -284,6 +284,14 @@ function ItemRow({
   dragging?: boolean;
 }) {
   const Icon = ICONS[item.kind as keyof typeof ICONS] ?? Coffee;
+  const details = (item.details ?? {}) as Record<string, unknown>;
+  const reason = typeof details.planner_reason === "string" ? details.planner_reason : null;
+  const time = item.start_time
+    ? new Date(item.start_time).toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
   return (
     <div
       className={`group flex items-start gap-2 rounded-lg border border-border bg-background p-3 ${
@@ -300,8 +308,16 @@ function ItemRow({
       </button>
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
       <div className="flex-1">
-        <p className="font-medium">{item.title}</p>
+        <p className="font-medium">
+          {time && <span className="mr-2 text-xs text-muted-foreground">{time}</span>}
+          {item.title}
+        </p>
         {item.subtitle && <p className="text-xs text-muted-foreground">{item.subtitle}</p>}
+        {reason && (
+          <p className="mt-0.5 text-xs italic text-muted-foreground" data-testid="planner-reason">
+            {reason}
+          </p>
+        )}
       </div>
       <div className="text-right">
         <p className="text-sm font-medium">
