@@ -143,9 +143,26 @@ lands next.
 - _For everyone:_ Each note is labelled, so you can tell a real Google rating from an AI suggestion
   about when to go.
 
+**Shared trips update live, and tell you who changed what**
+
+- _Technical:_ New `useTripRealtime` hook holds one `postgres_changes` subscription per open trip,
+  feeding the existing `invalidate()` chokepoint rather than inventing a second refresh path.
+  Freshness comes from `trips`/`trip_items` events; attribution comes from `trip_activity`, because
+  a `trip_items` payload cannot say who made a change — its `user_id` is creator provenance and is
+  unchanged by an update. Three silent-failure guards: `realtime.setAuth()` before subscribing (RLS
+  channels deliver nothing without it while still reporting `SUBSCRIBED`), re-auth on
+  `TOKEN_REFRESHED`, and `removeChannel` on unmount. Row events are debounced 250ms so one drag
+  causes one refetch rather than one per shifted row. Activity is logged per user *intent* — one
+  action, one row — and logging is fire-and-forget, so an audit trail can never fail the edit it
+  describes. `trip_activity` is append-only with `actor_id` pinned to `auth.uid()` by RLS, so a
+  forged attribution is rejected by the database.
+- _For everyone:_ Open a shared trip alongside a collaborator and their changes appear as they make
+  them, with no refreshing. A short message tells you who did what — and never bothers you about
+  your own edits. An Activity button shows recent changes if you missed them.
+
 #### Upcoming
 
-- Realtime sync for shared trips, change notifications, and an activity feed.
+- Presence ("who's viewing this trip") on shared trips.
 - Replacement live hotel data source (TravelPayouts is discontinued).
 
 ## v0.4.0 — 2026-08-05
