@@ -669,9 +669,6 @@ export const dayPlan = createServerFn({ method: "POST" })
       .object({
         destination: z.string(),
         day_number: z.number().int().min(1),
-        /** Traveler-set start time for this day, e.g. "09:00", or null. Feeds
-         * the guidance prompt only — not a per-stop time. */
-        day_start_time: z.string().nullable(),
         stops: z
           .array(
             z.object({
@@ -739,7 +736,6 @@ export const dayPlan = createServerFn({ method: "POST" })
     const guidance = await generateStructured(
       `Day ${data.day_number} of a trip to ${data.destination} has these stops, in order:
 ${summary || "(none)"}
-${data.day_start_time ? `\nThe traveler plans to start the day around ${data.day_start_time}.` : ""}
 ${route ? `\nDriving between them totals about ${route.total_hours.toFixed(1)} hours over ${Math.round(route.total_miles)} miles.` : ""}
 
 Give up to 3 short, practical notes for this specific day — best time of day for

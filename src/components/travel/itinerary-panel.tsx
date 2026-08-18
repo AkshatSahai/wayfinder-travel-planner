@@ -67,9 +67,6 @@ interface Props {
   items: Item[];
   numDays: number;
   startDate: string | null;
-  /** Traveler-set start time per day, keyed by day index as a string ("0", "1", …). */
-  dayStartTimes: Record<string, string>;
-  onSetDayStartTime: (dayIndex: number, hhmm: string | null) => void;
   /** Pin (or clear, with `hhmm: null`) a single activity's arrival time. */
   onPinTime: (item: Item, hhmm: string | null) => void;
   chat: {
@@ -108,8 +105,6 @@ export function ItineraryPanel({
   items,
   numDays,
   startDate,
-  dayStartTimes,
-  onSetDayStartTime,
   onPinTime,
   chat,
   advice,
@@ -340,22 +335,9 @@ export function ItineraryPanel({
                             </span>
                           )}
                         </h3>
-                        <div className="flex items-center gap-2">
-                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <Clock className="h-3.5 w-3.5" />
-                            Start
-                            <Input
-                              type="time"
-                              className="h-7 w-24 px-2 text-xs"
-                              value={dayStartTimes[String(dayIdx)] ?? ""}
-                              onChange={(e) => onSetDayStartTime(dayIdx, e.target.value || null)}
-                              data-testid={`day-start-time-${dayIdx}`}
-                            />
-                          </label>
-                          <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
-                            <Plus className="mr-1 h-3 w-3" /> Block
-                          </Button>
-                        </div>
+                        <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
+                          <Plus className="mr-1 h-3 w-3" /> Block
+                        </Button>
                       </div>
 
                       {blockDay === dayIdx && (

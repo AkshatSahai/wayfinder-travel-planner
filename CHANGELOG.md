@@ -1,5 +1,45 @@
 # Wayfinder Changelog
 
+## v0.7.1 — 2026-08-17
+
+### Overview
+
+A real bug fix and a small cleanup on top of v0.7.0.
+
+The day map was reporting "nothing to plot" for days whose activities actually had saved
+locations — traced to one specific add path (the Places browse dialog) saving coordinates under
+the wrong field, which the map's reader never looked at. Fixed on both sides: the map now also
+reads the old (wrong) field so already-added activities plot immediately, and new adds are saved
+correctly so this doesn't keep happening. Also removed the per-day "Start" time field added in
+v0.6.0 — it was part of a manual-timing approach being simplified away, and nothing about the map
+or driving-time math actually depended on it.
+
+### Updates
+
+#### Bug Fixes
+
+**Day map said "no location" for activities that had one**
+
+- _Technical:_ `coordsOf()` in `itinerary-day-panel.tsx` reads `details.coords.{lat,lng}` — the
+  convention every other writer in the codebase uses. The Places browse dialog's Add handler
+  (`activities-panel.tsx`) instead spread the raw search result straight into `details`, which
+  carries flat `lat`/`lng` keys (`mapPlace()` in `google-places.server.ts`), never nested under
+  `coords`. `trip_items.details` is unvalidated JSON, so nothing caught the mismatch. Fixed on
+  both ends: `coordsOf()` now falls back to the flat shape (fixes already-saved rows immediately,
+  no backfill needed), and the Add handler now nests coordinates correctly (stops new adds from
+  drifting the same way).
+- _For everyone:_ Activities added by browsing "food & places" now show up on the day map like
+  every other kind of activity.
+
+#### Itinerary
+
+**Removed the per-day start time field**
+
+- Dropped the "Start" time input from each day's column header, and the `trips.day_start_times`
+  column behind it (new migration). It only ever fed AI guidance-note text, never the actual
+  map/route calculation, and it was part of the manual-timing approach v0.6.0 started moving away
+  from with per-item pinned times — this removes the last piece of it.
+
 ## v0.7.0 — 2026-08-17
 
 ### Overview

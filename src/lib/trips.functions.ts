@@ -12,9 +12,6 @@ const tripInsertSchema = z.object({
   party_size: z.number().int().nullable().optional(),
   budget_cents: z.number().int().nullable().optional(),
   currency: z.string().max(8).optional(),
-  // Per-day itinerary start time, keyed by day index ("0", "1", ...) -> "HH:MM".
-  // Feeds drive-time guidance for that day only — never written onto items.
-  day_start_times: z.record(z.string(), z.string()).nullable().optional(),
 });
 
 const tripUpdateSchema = tripInsertSchema.extend({ id: z.string().uuid() });

@@ -19,18 +19,12 @@ human run-through.)
       Untested locally. Added 2026-08-17.
 - [ ] **Live maps in local dev** — maps are reported to only work in production; confirm
       whether this is still true and why. Added 2026-08-17.
-- [ ] **Day start time field** (itinerary timing fix) — confirm setting a day's start time
-      correctly feeds drive-time/route guidance without writing a timestamp onto any activity.
-      Added 2026-08-17.
 - [ ] **Per-item pinned arrival time + conflict check** (itinerary timing fix) — confirm pinning
       a specific activity's time flags a realistic conflict (not enough travel time from the
       prior stop) and doesn't false-positive on reasonable schedules. Added 2026-08-17.
 - [ ] **Quieter advisor banner** (itinerary timing fix) — confirm the restyled A4 advisor note
       still surfaces after a drag-reorder, reads correctly, and no longer references a stale or
       mismatched time. Added 2026-08-17.
-- [ ] **Chat drawer layout** (itinerary timing fix) — confirm the collapsible chat drawer opens/
-      closes cleanly and the day tabs/list/map layout is unaffected when it's closed. Added
-      2026-08-17.
 - [ ] **Geography-aware clustering in "Build out itinerary"** — confirm against the reported real
       case (four Merrillville/Michigan City, IN venues within ~5 minutes of each other) that they
       now land on the same day; tune `CLUSTER_RADIUS_MILES` in `geo-cluster.ts` (currently 9) if
@@ -49,6 +43,10 @@ human run-through.)
 - [ ] **Chat research mode** — confirm an open-ended question ("what are good restaurants near
       day 2's stops?") returns real, named Places results with reasoning (not hallucinated), and
       that a genuinely ambiguous question gets a clarifying reply instead of a guess. Added
+      2026-08-17.
+- [ ] **Day map location fix** — confirm a day with activities added via the Places browse dialog
+      (e.g. "Anytime — food & places") now renders pins and a route instead of "nothing to plot,"
+      both for already-saved activities (reader fallback) and newly-added ones (writer fix). Added
       2026-08-17.
 
 ## Scoped, not yet built

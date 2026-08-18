@@ -340,7 +340,19 @@ export function ActivitiesPanel({
                               category: a.category,
                               cost_cents: a.est_cost_cents,
                               day_index: null,
-                              details: a,
+                              // `a.lat`/`a.lng` are flat fields on the search
+                              // result; every reader (the day map, itinerary
+                              // building) expects coordinates nested under
+                              // `coords` instead — nest them here rather than
+                              // spreading `a` verbatim, or the day map can't
+                              // find them.
+                              details: {
+                                ...a,
+                                coords:
+                                  a.lat != null && a.lng != null
+                                    ? { lat: a.lat, lng: a.lng }
+                                    : null,
+                              },
                               source_url: a.source_url ?? undefined,
                             })
                           }

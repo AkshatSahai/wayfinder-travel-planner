@@ -159,14 +159,12 @@ export interface ArrivalCheckItem {
  * feature rather than inventing a second advisor mechanism.
  *
  * `dayItems` must be in the day's current display (drag) order, and must
- * include the pinned item at its current position. `dayStartMinutes` is the
- * day's configured start time (day_start_times), or null if unset.
+ * include the pinned item at its current position.
  */
 export function checkArrivalConflict(
   dayItems: ArrivalCheckItem[],
   pinnedId: string,
   pinnedMinutes: number,
-  dayStartMinutes: number | null,
 ): { conflict: boolean; detail: string | null } {
   const idx = dayItems.findIndex((i) => i.id === pinnedId);
   if (idx <= 0) return { conflict: false, detail: null };
@@ -180,7 +178,7 @@ export function checkArrivalConflict(
     }
   }
 
-  const earliestStart = dayItems[0].minutes ?? dayStartMinutes ?? 0;
+  const earliestStart = dayItems[0].minutes ?? 0;
   const earliestArrival = earliestStart + minutesNeeded;
   if (pinnedMinutes < earliestArrival) {
     return {

@@ -642,17 +642,6 @@ function WorkspacePage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  /** A day's configured start time only feeds drive-time guidance and the
-   * arrival-conflict check below — it is never written onto an item. */
-  const setDayStartTime = (dayIndex: number, hhmm: string | null) => {
-    const trip = data!.trip;
-    const current = ((trip.day_start_times ?? {}) as Record<string, string>) ?? {};
-    const next = { ...current };
-    if (hhmm) next[String(dayIndex)] = hhmm;
-    else delete next[String(dayIndex)];
-    updateMut.mutate({ day_start_times: next });
-  };
-
   /**
    * Pin a single activity's arrival time — the one remaining write path for
    * `start_time`, now that the AI planner and chat only ever sequence by
@@ -671,8 +660,6 @@ function WorkspacePage() {
       invalidate();
       if (!stamp || item.day_index == null) return;
 
-      const dayStartTimes = (data!.trip.day_start_times ?? {}) as Record<string, string>;
-      const dayStartMinutes = minutesFromClock(dayStartTimes[String(item.day_index)] ?? null);
       const dayItems = committedItems(data!.items)
         .filter((i) => i.day_index === item.day_index)
         .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
@@ -690,7 +677,7 @@ function WorkspacePage() {
 
       const pinnedMinutes = minutesFromTimestamp(stamp);
       if (pinnedMinutes == null) return;
-      const result = checkArrivalConflict(dayItems, item.id, pinnedMinutes, dayStartMinutes);
+      const result = checkArrivalConflict(dayItems, item.id, pinnedMinutes);
       if (result.conflict && result.detail) {
         setAdvice({ day: item.day_index, itemId: item.id, note: result.detail });
       }
@@ -922,8 +909,6 @@ function WorkspacePage() {
               items={items}
               numDays={numDays}
               startDate={trip.start_date}
-              dayStartTimes={(trip.day_start_times ?? {}) as Record<string, string>}
-              onSetDayStartTime={setDayStartTime}
               onPinTime={(item, hhmm) => pinTimeMut.mutate({ item, hhmm })}
               chat={{
                 messages: chatMessages,
@@ -940,9 +925,6 @@ function WorkspacePage() {
                   tripId={tripId}
                   destination={destination}
                   dayIndex={dayIdx}
-                  dayStartTime={
-                    ((trip.day_start_times ?? {}) as Record<string, string>)[String(dayIdx)] ?? null
-                  }
                   items={committedItems(items)
                     .filter((i) => i.day_index === dayIdx)
                     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))}

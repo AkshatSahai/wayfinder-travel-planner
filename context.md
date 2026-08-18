@@ -394,6 +394,37 @@ implicated. Real results are then handed to a second `generateStructured` call i
 tell which day/place a research question means) short-circuits before any Places call, mirroring
 the existing edit-ambiguity rule ("never guess at a removal") extended to research targets.
 
+### Day map location bug + removing day start time (v0.7.1)
+
+**Bug: `details.coords` vs. flat `details.lat`/`details.lng`.** `coordsOf()` in
+`itinerary-day-panel.tsx` reads `item.details.coords = { lat, lng }` — the shape every writer in
+the codebase uses (AI enrichment in `buildItinerary`/`chatItinerary`, lodging) **except one**: the
+Places browse dialog's Add handler (`activities-panel.tsx`) did `details: a`, spreading the raw
+search result verbatim. `mapPlace()` in `google-places.server.ts` returns `lat`/`lng` as flat
+top-level keys, not nested under `coords` — so activities added that way (e.g. "Albanese Candy
+Factory," reported as the trigger case) got real coordinates saved under the wrong key, and the
+day map's "nothing to plot" fallback fired despite the data genuinely being there.
+`trip_items.details` is unvalidated JSON (`z.any()`), so nothing catches this class of mismatch at
+write time — worth remembering if another writer is added later.
+
+Fixed both ends, deliberately not just one:
+- `coordsOf()` now falls back to flat `details.lat`/`details.lng` when `details.coords` is absent
+  — this is what actually fixes *already-saved* rows immediately, with no backfill/migration
+  needed (the "real stored data" for existing activities genuinely is in the flat shape).
+- The Add handler now nests coordinates under `details.coords` like every other writer, so new
+  adds through this flow stop drifting from the rest of the codebase.
+- A reader-only fix (without the writer fix) would have been a permanent patch masking a bug that
+  keeps recurring for every future add through that path; a writer-only fix wouldn't have helped
+  any activity already saved before the fix shipped. Needed both.
+
+**Day start time removed.** The per-day "Start" input (added in v0.6.0's B3) is gone — UI, the
+`day_start_time` param on `dayPlan`'s prompt, `trips.day_start_times` (dropped via migration
+`20260817020000_drop_day_start_times.sql`), and `checkArrivalConflict`'s now-unused
+`dayStartMinutes` parameter (its fallback is a hardcoded `0` now). It never affected the actual
+map/route calculation (OSRM distance/duration between real coordinates) — only AI guidance-note
+text — and was judged not worth the manual-input UI now that the itinerary's timing model has
+moved to drag-order-is-truth plus optional per-item pinned times (see the v0.6.0 entry above).
+
 ### Itinerary building: the planner only sees staged activities
 
 `buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
@@ -600,6 +631,20 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.7.1 (day map location bug, remove day start time) — 2026-08-17
+
+Not yet verified end-to-end in a live browser — see §3's "Day map location bug + removing day
+start time (v0.7.1)" for the design, and `FEATURE_TRACKING.md` for the manual-test checklist.
+**Needs the new migration applied to the live Supabase project** (drops `trips.day_start_times`)
+before this is usable in production.
+
+1. **Fixed the day map "nothing to plot" bug** — a coordinate field-name mismatch (`details.coords`
+   vs. flat `details.lat`/`details.lng`) in the Places browse-and-add flow. Fixed both the reader
+   (fallback, fixes already-saved activities immediately) and the writer (stops new adds from
+   drifting the same way).
+2. **Removed the per-day start time field** — UI, `dayPlan`'s prompt input, and the
+   `trips.day_start_times` column, all the way out. Never affected the actual map/route math.
 
 ### v0.7.0 (itinerary intelligence, drag-and-drop, chat research) — 2026-08-17
 
