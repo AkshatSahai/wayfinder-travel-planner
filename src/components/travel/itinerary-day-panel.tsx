@@ -99,7 +99,7 @@ export function ItineraryDayPanel({ tripId, destination, dayIndex, items }: Prop
   if (stops.length === 0) {
     return (
       <div
-        className="flex h-full min-h-[320px] items-center justify-center rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground"
+        className="flex h-[450px] items-center justify-center rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground"
         data-testid="day-panel-empty"
       >
         Nothing scheduled on this day yet.
@@ -116,7 +116,7 @@ export function ItineraryDayPanel({ tripId, destination, dayIndex, items }: Prop
   return (
     <div className="space-y-3" data-testid="day-side-panel">
       {pins.length >= 1 ? (
-        <div className="h-[320px]">
+        <div className="h-[450px]">
           <DestinationMap
             pins={pins}
             routeDestination={null}
@@ -128,7 +128,7 @@ export function ItineraryDayPanel({ tripId, destination, dayIndex, items }: Prop
         </div>
       ) : (
         <div
-          className="flex h-[320px] items-center justify-center rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground"
+          className="flex h-[450px] items-center justify-center rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground"
           data-testid="day-map-unavailable"
         >
           <div>

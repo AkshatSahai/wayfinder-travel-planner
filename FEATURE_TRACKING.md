@@ -37,9 +37,6 @@ human run-through.)
       activity onto a day schedules it, dragging a scheduled one back onto the panel unschedules
       it, the panel's collapse toggle works, and the day map/notes stay in sync either way. Added
       2026-08-17.
-- [ ] **Chat reads as part of the screen, not a popup** — confirm the Map/Ask AI tab switcher in
-      the itinerary's right slot feels integrated (no backdrop/overlay), and that existing edit
-      commands ("move X to day 2") still work exactly as before. Added 2026-08-17.
 - [ ] **Chat research mode** — confirm an open-ended question ("what are good restaurants near
       day 2's stops?") returns real, named Places results with reasoning (not hallucinated), and
       that a genuinely ambiguous question gets a clarifying reply instead of a guess. Added
@@ -56,6 +53,11 @@ human run-through.)
       reported "Albanese Candy Factory"), confirm the workaround still works: unschedule it, then
       either re-add it or re-run "Build out itinerary" to pick up real coordinates. Added
       2026-08-17.
+- [ ] **Itinerary layout: full-width map + persistent chat sidebar** — confirm activities panel +
+      day schedule sit side by side at the top, the day map renders full-width beneath at the
+      taller height, and the chat sidebar (dark-green, sidebar-styled) is always visible on the
+      right with no toggle. **Specifically test a day with 4+ activities** — confirm markers stay
+      distinct and the route is legible, not just the 3-item cases used so far. Added 2026-08-17.
 
 ## Scoped, not yet built
 (Decided to build, not started or paused.)

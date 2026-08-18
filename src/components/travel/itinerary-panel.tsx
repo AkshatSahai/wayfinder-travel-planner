@@ -36,7 +36,6 @@ import {
   SendHorizonal,
   Lightbulb,
   MessageCircle,
-  MapPin,
   Clock,
   ChevronsLeft,
   ChevronsRight,
@@ -119,7 +118,6 @@ export function ItineraryPanel({
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
   const [chatInput, setChatInput] = useState("");
-  const [rightView, setRightView] = useState<"map" | "chat">("map");
   const [activitiesOpen, setActivitiesOpen] = useState(true);
   const [selectedDayRaw, setSelectedDayRaw] = useState(0);
 
@@ -285,33 +283,35 @@ export function ItineraryPanel({
         onDragEnd={handleDragEnd}
         onDragCancel={() => setDragging(null)}
       >
-        <div className="flex items-start gap-4">
-          <ActivitiesDragPanel
-            activities={allActivities}
-            open={activitiesOpen}
-            onToggle={() => setActivitiesOpen((o) => !o)}
-          />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_210px]">
+          {/* Left/main area: activities + day schedule on top, the day's
+              route map full-width beneath. */}
+          <div className="min-w-0 space-y-4">
+            <div className="flex items-start gap-4">
+              <ActivitiesDragPanel
+                activities={allActivities}
+                open={activitiesOpen}
+                onToggle={() => setActivitiesOpen((o) => !o)}
+              />
 
-          <div className="min-w-0 flex-1 space-y-4">
-            {/* Day tabs double as drop targets so an item can still be moved to
-                a day that isn't currently shown — otherwise switching to a
-                day-at-a-time view would remove the only way to drag across
-                days. */}
-            <div className="flex flex-wrap gap-2" data-testid="day-tabs">
-              {Array.from({ length: days }).map((_, dayIdx) => (
-                <DayTab
-                  key={dayIdx}
-                  dayIdx={dayIdx}
-                  active={dayIdx === selectedDay}
-                  count={(byDay.get(dayIdx) ?? []).length}
-                  startDate={startDate}
-                  onSelect={() => setSelectedDay(dayIdx)}
-                />
-              ))}
-            </div>
+              <div className="min-w-0 flex-1 space-y-4">
+                {/* Day tabs double as drop targets so an item can still be moved
+                    to a day that isn't currently shown — otherwise switching to
+                    a day-at-a-time view would remove the only way to drag
+                    across days. */}
+                <div className="flex flex-wrap gap-2" data-testid="day-tabs">
+                  {Array.from({ length: days }).map((_, dayIdx) => (
+                    <DayTab
+                      key={dayIdx}
+                      dayIdx={dayIdx}
+                      active={dayIdx === selectedDay}
+                      count={(byDay.get(dayIdx) ?? []).length}
+                      startDate={startDate}
+                      onSelect={() => setSelectedDay(dayIdx)}
+                    />
+                  ))}
+                </div>
 
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-              <div className="space-y-4">
                 {[selectedDay].map((dayIdx) => {
                   const dayItems = byDay.get(dayIdx) ?? [];
                   const date = startDate
@@ -420,90 +420,66 @@ export function ItineraryPanel({
                   );
                 })}
               </div>
+            </div>
 
-              <div className="space-y-3">
-                <div className="flex gap-1 rounded-lg border border-border bg-muted/40 p-1 text-sm">
-                  <button
-                    onClick={() => setRightView("map")}
-                    data-testid="itinerary-right-map-tab"
-                    className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${
-                      rightView === "map"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <MapPin className="mr-1.5 inline h-3.5 w-3.5" /> Map
-                  </button>
-                  <button
-                    onClick={() => setRightView("chat")}
-                    data-testid="itinerary-right-chat-tab"
-                    className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors ${
-                      rightView === "chat"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <MessageCircle className="mr-1.5 inline h-3.5 w-3.5" /> Ask AI
-                    {chat.messages.length > 0 && (
-                      <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                        {chat.messages.length}
-                      </span>
-                    )}
-                  </button>
+            {/* Day map, full width of the main area — no longer squeezed into
+                a side column sharing space with a chat toggle. */}
+            <div data-testid="day-map-row">{dayPanel}</div>
+          </div>
+
+          {/* Persistent chat sidebar — always visible alongside the map, not a
+              toggle sharing one slot with it. Styled like the app's own left
+              nav (bg-sidebar/text-sidebar-foreground) rather than a neutral
+              card, per the "looks like the left nav" request. */}
+          <div
+            className="flex flex-col rounded-2xl bg-sidebar p-3 text-sidebar-foreground"
+            data-testid="itinerary-chat"
+          >
+            <h3 className="flex items-center gap-1.5 font-display text-sm font-semibold">
+              <MessageCircle className="h-4 w-4" /> Ask AI
+            </h3>
+            <p className="mb-2 mt-1 text-xs text-sidebar-muted">
+              "Move the aquarium to day 3" · "what's good near day 2's stops?"
+            </p>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+              {chat.messages.map((m, i) => (
+                <div
+                  key={i}
+                  className={`max-w-full rounded-xl px-3 py-2 text-sm ${
+                    m.role === "user"
+                      ? "bg-sidebar-active text-sidebar-foreground"
+                      : "bg-sidebar-active/40 text-sidebar-foreground"
+                  }`}
+                >
+                  {m.content}
                 </div>
-
-                {rightView === "map" ? (
-                  dayPanel
-                ) : (
-                  <div
-                    className="flex min-h-[420px] flex-col rounded-2xl border border-border bg-card p-4 shadow-soft"
-                    data-testid="itinerary-chat"
-                  >
-                    <p className="mb-2 text-xs text-muted-foreground">
-                      Ask for a change — "move the aquarium to day 3", "swap days 1 and 2" — or ask
-                      a question — "what are good restaurants near day 2's stops?"
-                    </p>
-                    <div className="flex-1 space-y-2 overflow-y-auto">
-                      {chat.messages.map((m, i) => (
-                        <div
-                          key={i}
-                          className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
-                            m.role === "user"
-                              ? "ml-auto bg-sidebar-active text-white"
-                              : "bg-muted text-foreground"
-                          }`}
-                        >
-                          {m.content}
-                        </div>
-                      ))}
-                      {chat.pending && (
-                        <div className="w-16 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
-                          …
-                        </div>
-                      )}
-                    </div>
-                    <div className="mt-3 flex gap-2">
-                      <Input
-                        placeholder="Ask for a change or a question…"
-                        value={chatInput}
-                        data-testid="itinerary-chat-input"
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") sendChat();
-                        }}
-                      />
-                      <Button
-                        size="icon"
-                        onClick={sendChat}
-                        data-testid="itinerary-chat-send"
-                        disabled={!chatInput.trim() || chat.pending}
-                      >
-                        <SendHorizonal className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
+              ))}
+              {chat.pending && (
+                <div className="w-16 rounded-xl bg-sidebar-active/40 px-3 py-2 text-sm text-sidebar-muted">
+                  …
+                </div>
+              )}
+            </div>
+            <div className="mt-3 space-y-2">
+              <Input
+                placeholder="Ask a question…"
+                value={chatInput}
+                data-testid="itinerary-chat-input"
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") sendChat();
+                }}
+                className="border-sidebar-active bg-sidebar-active/20 text-sidebar-foreground placeholder:text-sidebar-muted"
+              />
+              <Button
+                size="sm"
+                onClick={sendChat}
+                data-testid="itinerary-chat-send"
+                disabled={!chatInput.trim() || chat.pending}
+                className="w-full"
+              >
+                <SendHorizonal className="mr-1.5 h-4 w-4" /> Send
+              </Button>
             </div>
           </div>
         </div>

@@ -1,5 +1,30 @@
 # Wayfinder Changelog
 
+## v0.8.0 — 2026-08-17
+
+### Overview
+
+Itinerary layout rework: the day map and the AI chat are no longer sharing one toggleable slot.
+
+The map used to be squeezed into half of a row shared with a Map/Ask AI switcher — only one of
+the two visible at a time, and the map itself cramped on busier days. Now the map spans the full
+width of the main area, taller, below the activities-list-and-day-schedule row, and the chat is a
+permanently visible sidebar on the right, styled like the app's own left navigation. Nothing to
+toggle — both are always there.
+
+### Updates
+
+#### Itinerary
+
+**Full-width map, persistent chat sidebar**
+
+- The day map moved out of the shared toggle slot into its own full-width row beneath the
+  activities panel and day schedule, and grew from 320px to 450px tall — enough room for a busier
+  day's stops to stay legible without excessive scrolling or overlapping markers.
+- The chat is now a fixed-width (~210px), always-visible right-hand sidebar, styled dark green
+  like the main left navigation, instead of a bordered card that only showed up when toggled to.
+- Removed the Map/Ask AI toggle entirely — both are simultaneously visible now.
+
 ## v0.7.2 — 2026-08-17
 
 ### Overview

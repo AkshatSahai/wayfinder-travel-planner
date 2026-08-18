@@ -466,6 +466,34 @@ field-name mismatch. Traced to three compounding gaps:
   to staged) and either re-added or picked up by a re-run of "Build out itinerary" (its own
   enrichment now finds it, since it's staged and coordinate-less).
 
+### Itinerary layout: full-width map + persistent chat sidebar (v0.8.0)
+
+The map and chat used to share one toggleable slot (`rightView: "map" | "chat"`) beside the day
+column — cramped (map got only half the row) and only one visible at a time. Reworked in
+`itinerary-panel.tsx`:
+- Outer grid became `grid lg:grid-cols-[minmax(0,1fr)_210px]` — a fixed-width right column plus a
+  flexible left one is the standard way to pin a sidebar width while letting the main area flex;
+  chosen over hand-computing an exact percentage split, which would fight with the fixed-width
+  requirement on the same column anyway.
+- Left column: the activities-panel + day-tabs/day-column row is unchanged in behavior, just no
+  longer paired with the map in its own 2-col grid — the day column now takes the full width of
+  its `flex-1` slot. A new full-width block renders `dayPanel` directly beneath it, no toggle
+  wrapper, no branch.
+- Map height: `itinerary-day-panel.tsx`'s three fixed-height wrappers (pins branch, "nothing to
+  plot" fallback, AND the `stops.length === 0` "nothing scheduled" empty state — three, not two;
+  worth checking all call sites when changing a shared height convention, not just the ones that
+  first come to mind) went from `320px` to `450px`. `DestinationMap`'s own `h-full` wrappers needed
+  no change — they fill whatever height the parent gives them, and `FitToPins`'s `map.fitBounds`
+  has no pin-count ceiling, so readability under a busy day was purely a function of container
+  height, not any code-level truncation.
+- Chat sidebar: always rendered now, no `rightView` state. Styled with the same tokens
+  `AppSidebar` uses for its dark-green look (`bg-sidebar`, `text-sidebar-foreground`,
+  `text-sidebar-muted`, `bg-sidebar-active`) rather than the neutral card style the toggle version
+  had. "Full height" is CSS grid's default `align-items: stretch` — the chat column automatically
+  matches the left column's rendered height with no extra code, since it's a sibling grid item.
+  This isn't the same as viewport height (`h-screen`, like the *actual* `AppSidebar`) — it's scoped
+  inside the Itinerary tab's own content area, not a sibling of the page shell.
+
 ### Itinerary building: the planner only sees staged activities
 
 `buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
@@ -672,6 +700,19 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.8.0 (itinerary layout: full-width map + persistent chat sidebar) — 2026-08-17
+
+Not yet verified end-to-end in a live browser — see §3's "Itinerary layout: full-width map +
+persistent chat sidebar (v0.8.0)" for the design, and `FEATURE_TRACKING.md` for the manual-test
+checklist, which specifically calls out testing a day with 4+ activities (not just the 3-item
+cases used so far) since that was the actual point of the height change. No schema/migration
+change — purely `itinerary-panel.tsx` (layout) and `itinerary-day-panel.tsx` (map height, 320px →
+450px, three call sites).
+
+Replaced the Map/Ask AI toggle (one shared slot, only one visible at a time) with the map full-
+width below the activities/day-schedule row and a permanently-visible chat sidebar on the right,
+styled like the app's own left nav.
 
 ### v0.7.2 (manually-added activities never got coordinates) — 2026-08-17
 
