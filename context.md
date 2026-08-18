@@ -425,6 +425,47 @@ map/route calculation (OSRM distance/duration between real coordinates) — only
 text — and was judged not worth the manual-input UI now that the itinerary's timing model has
 moved to drag-order-is-truth plus optional per-item pinned times (see the v0.6.0 entry above).
 
+### Manually-added activities never got coordinates (v0.7.2)
+
+A second, unrelated day-map location bug, found right after v0.7.1 shipped: v0.7.1 fixed activities
+added via the Places browse dialog (real coordinates, saved under the wrong field). This one is
+activities added through the **manual form** — those never had coordinates at all, not a
+field-name mismatch. Traced to three compounding gaps:
+- `activity-manual-form.tsx` only ever submitted `details: { location, duration_hours,
+  preferred_date }` — `location` is a plain string, no `coords` anywhere.
+- `place-autocomplete.tsx`'s suggestion picker only passes up the prediction's display **text**
+  (`onChange(s.text)`) — it never calls Places Details to resolve a `placeId` to coordinates. Its
+  own docstring claimed "coordinates are resolved server-side at submit" — that was aspirational;
+  nothing implemented it. (Fixed as of this entry — the docstring now points at where it actually
+  happens.)
+- `addTripItem` inserted `details` exactly as sent, no geocoding. The only geocoding anywhere
+  (`lookupPlaceDetails`) was wired into `buildItinerary`'s enrichment, which only runs on **staged**
+  activities when "Build out itinerary" is clicked — never at manual-add time, and never for an
+  activity already scheduled onto a day (like the reported case).
+
+**Fix: one chokepoint, not three.** `enrichActivityLocation()` in `trips.functions.ts`, called from
+`addTripItem` before every insert, scoped to `kind === "activity"`:
+- Skips entirely if `details.coords` already exists (browse-dialog and chat-added activities
+  already carry real ones — this is a no-op for them, not a duplicate lookup).
+- Otherwise calls `lookupPlaceDetails(title, near)`, where `near` is `details.location` if typed,
+  else the trip's `destination` (one extra `trips` select by `trip_id`) — the same
+  "name + destination" fallback `buildItinerary`'s own enrichment already uses.
+  Every activity, regardless of how it was created, passes through `addTripItem` to be inserted,
+  so this is the one place that can guarantee "gets real coordinates if they can be found" without
+  fixing each entry point (manual form, autocomplete, chat) separately.
+- Non-fatal by design — a missing key, an outage, or zero results just means the activity saves
+  without coordinates, same as before this existed. Never blocks the add.
+- **TS gotcha**: typing the lookup context param directly against the real Supabase client's
+  `context.supabase` type (deeply generic, many `.select()` overloads) hit
+  `TS2589: Type instantiation is excessively deep and possibly infinite`. Fixed with a narrow local
+  `TripLookupContext` type and an explicit `as unknown as TripLookupContext` cast at the one call
+  site — bypasses the structural comparison entirely rather than trying to make the narrow type
+  structurally assignable from the real client type.
+- **Does not retroactively fix rows saved before this shipped** (e.g. "Albanese Candy Factory," the
+  reported case) — no backfill/migration. The already-scheduled row needs to be unscheduled (back
+  to staged) and either re-added or picked up by a re-run of "Build out itinerary" (its own
+  enrichment now finds it, since it's staged and coordinate-less).
+
 ### Itinerary building: the planner only sees staged activities
 
 `buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
@@ -631,6 +672,20 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.7.2 (manually-added activities never got coordinates) — 2026-08-17
+
+Not yet verified end-to-end in a live browser — see §3's "Manually-added activities never got
+coordinates (v0.7.2)" for the design, and `FEATURE_TRACKING.md` for the manual-test checklist. No
+schema/migration change — purely code, in `addTripItem` (`trips.functions.ts`).
+
+A second, unrelated day-map location bug found right after v0.7.1: activities added through the
+manual form never got coordinates at all (not a field-name mismatch like v0.7.1 — genuinely never
+geocoded). Fixed with one new server-side enrichment step, `enrichActivityLocation()`, run for
+every activity insert regardless of source (manual form typed/autocompleted/blank, browse dialog,
+chat) rather than fixing each entry point separately. Does not retroactively fix rows already
+saved without coordinates — see the workaround (unschedule + re-add or re-run "Build out
+itinerary") in §3.
 
 ### v0.7.1 (day map location bug, remove day start time) — 2026-08-17
 

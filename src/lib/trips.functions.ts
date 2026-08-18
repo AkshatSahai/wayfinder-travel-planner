@@ -155,6 +155,68 @@ export const getTrip = createServerFn({ method: "POST" })
     return { trip, items: items ?? [] };
   });
 
+/**
+ * Best-effort geocoding for a freshly-added activity, run for every source
+ * (manual form, Places browse, chat's `add` op) rather than each entry point
+ * doing its own lookup — the day map only plots `details.coords`, and the
+ * manual-add path in particular never resolved it despite
+ * `place-autocomplete.tsx`'s docstring claiming it happens "server-side at
+ * submit" (that claim had nothing behind it before this).
+ *
+ * A no-op when coords already exist (browse/chat already attach real ones),
+ * so this never duplicates a lookup that already succeeded. When there's no
+ * typed location either, falls back to the trip's destination as the
+ * geocoding hint — the same "resolve from name + destination" fallback
+ * `buildItinerary`'s own enrichment uses. Never throws: a missing key, an
+ * outage, or zero results just means the activity saves without coordinates,
+ * same as before this existed.
+ */
+type TripLookupContext = {
+  supabase: {
+    from: (table: string) => {
+      select: (cols: string) => {
+        eq: (
+          col: string,
+          val: string,
+        ) => { maybeSingle: () => PromiseLike<{ data: { destination?: string | null } | null }> };
+      };
+    };
+  };
+};
+
+async function enrichActivityLocation(
+  context: TripLookupContext,
+  item: { trip_id: string; kind: string; title: string; details?: unknown },
+): Promise<Record<string, unknown> | undefined> {
+  if (item.kind !== "activity") return undefined;
+  const details = (item.details ?? {}) as Record<string, unknown>;
+  const coords = details.coords as { lat?: number; lng?: number } | undefined;
+  if (coords && typeof coords.lat === "number" && typeof coords.lng === "number") return undefined;
+
+  try {
+    const { lookupPlaceDetails } = await import("./providers/google-places.server");
+    let near = typeof details.location === "string" && details.location ? details.location : null;
+    if (!near) {
+      const { data: trip } = await context.supabase
+        .from("trips")
+        .select("destination")
+        .eq("id", item.trip_id)
+        .maybeSingle();
+      near = (trip?.destination as string | undefined) ?? null;
+    }
+    const found = await lookupPlaceDetails(item.title, near);
+    if (!found || found.lat == null || found.lng == null) return undefined;
+    return {
+      ...details,
+      location: details.location || found.address || undefined,
+      coords: { lat: found.lat, lng: found.lng },
+    };
+  } catch (err) {
+    console.error("[add-trip-item] location enrichment unavailable:", err);
+    return undefined;
+  }
+}
+
 export const addTripItem = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -162,9 +224,17 @@ export const addTripItem = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     const { activity, ...item } = data;
+    const enrichedDetails = await enrichActivityLocation(
+      context as unknown as TripLookupContext,
+      item,
+    );
     const { data: row, error } = await context.supabase
       .from("trip_items")
-      .insert({ ...item, user_id: context.userId })
+      .insert({
+        ...item,
+        ...(enrichedDetails ? { details: enrichedDetails } : {}),
+        user_id: context.userId,
+      })
       .select("*")
       .single();
     if (error) throw new Error(error.message);

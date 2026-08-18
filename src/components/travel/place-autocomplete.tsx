@@ -61,8 +61,9 @@ class AutocompleteErrorBoundary extends Component<
 /**
  * Location input with Google Places autocomplete. Suggestions are a
  * convenience layer only — the typed text is always accepted, and coordinates
- * are resolved server-side at submit, so a missing or rejected Maps key
- * degrades to a plain text field rather than blocking entry.
+ * are resolved server-side at submit (`enrichActivityLocation` in
+ * `trips.functions.ts`'s `addTripItem`, not here), so a missing or rejected
+ * Maps key degrades to a plain text field rather than blocking entry.
  */
 export function PlaceAutocomplete(props: Props) {
   const [authFailed, setAuthFailed] = useState(false);

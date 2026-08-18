@@ -48,6 +48,14 @@ human run-through.)
       (e.g. "Anytime — food & places") now renders pins and a route instead of "nothing to plot,"
       both for already-saved activities (reader fallback) and newly-added ones (writer fix). Added
       2026-08-17.
+- [ ] **Manually-added activities now get geocoded** — confirm a new activity added via the manual
+      form (typed location, autocompleted location, and no location at all) ends up with real
+      coordinates and plots on the day map once scheduled; confirm browse-dialog/chat-added
+      activities are unaffected (no duplicate lookup). Added 2026-08-17.
+- [ ] **Existing coordinate-less activities** — for any activity added before this fix (e.g. the
+      reported "Albanese Candy Factory"), confirm the workaround still works: unschedule it, then
+      either re-add it or re-run "Build out itinerary" to pick up real coordinates. Added
+      2026-08-17.
 
 ## Scoped, not yet built
 (Decided to build, not started or paused.)

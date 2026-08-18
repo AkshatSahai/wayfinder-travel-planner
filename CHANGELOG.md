@@ -1,5 +1,33 @@
 # Wayfinder Changelog
 
+## v0.7.2 — 2026-08-17
+
+### Overview
+
+Another day-map bug fix, following v0.7.1's.
+
+That fix covered activities added via the Places browse dialog (real coordinates, saved under the
+wrong field). This one covers a different gap: activities added through the manual form never got
+coordinates at all — not typed locations, not ones picked from the autocomplete dropdown, and not
+activities added with no location text at all. The manual-add form's own code comment claimed
+coordinates were "resolved server-side at submit," but nothing actually did that. Now it's true.
+
+### Updates
+
+#### Bug Fixes
+
+**Manually-added activities never got a location**
+
+- _Technical:_ `addTripItem` now geocodes any activity that reaches it without coordinates,
+  regardless of source — a single chokepoint rather than fixing each entry point separately.
+  Uses `details.location` as the search hint when typed, or falls back to the trip's destination
+  when there's no location text at all (the same fallback `buildItinerary`'s own enrichment
+  already uses). A no-op for activities that already carry real coordinates (Places browse, chat's
+  `add`), and non-fatal on any lookup failure — the activity still saves either way.
+- _For everyone:_ Any activity you add by hand — typed, autocompleted, or just a name — now shows
+  up on the day map once it's scheduled. Activities added before this fix (with no location saved)
+  can be fixed by unscheduling them and either re-adding or re-running "Build out itinerary."
+
 ## v0.7.1 — 2026-08-17
 
 ### Overview
