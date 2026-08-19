@@ -10,16 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  ExternalLink,
-  Star,
-  Ticket,
-  CalendarDays,
-  Sparkles,
-  X,
-  MapPin,
-  CalendarRange,
-} from "lucide-react";
+import { ExternalLink, Star, Ticket, CalendarDays, Sparkles, X, MapPin } from "lucide-react";
 import { formatMoney } from "@/lib/workspace-store";
 import { ProviderSetupCard } from "./provider-setup-card";
 import { ActivityManualForm } from "./activity-manual-form";
@@ -57,7 +48,7 @@ interface Props {
    * list, so an activity the itinerary chat adds shows up here too.
    */
   activities: Item[];
-  /** How many of those still have no day; drives the build-out button. */
+  /** How many of those still have no day; drives this tab's summary line. */
   unscheduledCount: number;
   /**
    * Manually-created trips open on a blank slate — nothing is fetched until the
@@ -66,9 +57,6 @@ interface Props {
   autoBrowse: boolean;
   onAdd: (item: NewActivity) => void;
   onRemove: (id: string) => void;
-  onBuildItinerary: () => void;
-  /** AI scheduling in flight — takes several seconds, so it must be visible. */
-  building: boolean;
 }
 
 export function ActivitiesPanel({
@@ -82,8 +70,6 @@ export function ActivitiesPanel({
   autoBrowse,
   onAdd,
   onRemove,
-  onBuildItinerary,
-  building,
 }: Props) {
   const fn = useServerFn(searchActivities);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>("All");
@@ -131,8 +117,6 @@ export function ActivitiesPanel({
         destination={destination}
         onRemove={onRemove}
         onBrowse={() => setBrowseOpen(true)}
-        onBuildItinerary={onBuildItinerary}
-        building={building}
       />
 
       <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
@@ -385,16 +369,12 @@ function ActivityList({
   destination,
   onRemove,
   onBrowse,
-  onBuildItinerary,
-  building,
 }: {
   activities: Item[];
   unscheduledCount: number;
   destination: string;
   onRemove: (id: string) => void;
   onBrowse: () => void;
-  onBuildItinerary: () => void;
-  building: boolean;
 }) {
   // Unscheduled first — those are the ones needing action.
   const rows = activities
@@ -417,28 +397,12 @@ function ActivityList({
                 "."
               : unscheduledCount === 0
                 ? `All ${activities.length} scheduled onto your itinerary.`
-                : `${unscheduledCount} not scheduled yet${scheduledCount > 0 ? `, ${scheduledCount} on your itinerary` : ""}.`}
+                : `${unscheduledCount} not scheduled yet${scheduledCount > 0 ? `, ${scheduledCount} on your itinerary` : ""} — drag them onto a day from the Itinerary tab.`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onBrowse} disabled={building}>
-            <Sparkles className="mr-1 h-4 w-4" /> Browse activities
-          </Button>
-          <Button
-            size="sm"
-            disabled={unscheduledCount === 0 || building}
-            onClick={onBuildItinerary}
-            data-testid="build-itinerary-btn"
-            title={
-              unscheduledCount === 0
-                ? "Everything is already scheduled"
-                : "Let AI arrange the unscheduled ones into your plan"
-            }
-          >
-            <CalendarRange className="mr-1 h-4 w-4" />
-            {building ? "Building…" : "Build out itinerary"}
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={onBrowse}>
+          <Sparkles className="mr-1 h-4 w-4" /> Browse activities
+        </Button>
       </div>
 
       {activities.length === 0 ? (

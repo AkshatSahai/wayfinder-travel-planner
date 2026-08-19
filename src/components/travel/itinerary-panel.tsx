@@ -33,9 +33,6 @@ import {
   Sparkles,
   Coffee,
   GripVertical,
-  SendHorizonal,
-  Lightbulb,
-  MessageCircle,
   Clock,
   ChevronsLeft,
   ChevronsRight,
@@ -60,19 +57,12 @@ export interface ItemMove {
   sort_order: number;
 }
 
-export type ItineraryChatMessage = { role: "user" | "assistant"; content: string };
-
 interface Props {
   items: Item[];
   numDays: number;
   startDate: string | null;
   /** Pin (or clear, with `hhmm: null`) a single activity's arrival time. */
   onPinTime: (item: Item, hhmm: string | null) => void;
-  chat: {
-    messages: ItineraryChatMessage[];
-    pending: boolean;
-    onSend: (text: string) => void;
-  };
   onAdd: (item: {
     kind: "block";
     title: string;
@@ -84,20 +74,21 @@ interface Props {
   onRemove: (item: Item) => void;
   /**
    * Persists a drag: the moved item plus any siblings whose order shifted.
-   * `moved` describes what the traveler actually dragged, so an advisory check
-   * can run afterwards without re-deriving it. `fromDay` is null when the drag
-   * scheduled a previously-staged activity for the first time.
+   * `moved` describes what the traveler actually dragged, so the caller can
+   * name it in the activity-feed entry without re-deriving it. `fromDay` is
+   * null when the drag scheduled a previously-staged activity for the first
+   * time.
    */
   onReorder: (
     moves: ItemMove[],
     moved?: { id: string; fromDay: number | null; toDay: number },
   ) => void;
-  /** At most one advisory note, or null. */
-  advice: { day: number; itemId: string; note: string } | null;
-  onDismissAdvice: () => void;
-  /** Right-hand panel for the selected day — map, drive time, and notes. */
-  renderDayPanel: (dayIdx: number) => React.ReactNode;
-  onSelectedDayChange?: (dayIdx: number) => void;
+  /**
+   * The reference map and distance list, rendered full-width beneath the day
+   * row. Takes no day index: it shows every activity on the trip, so it is
+   * deliberately independent of which day tab is selected.
+   */
+  renderMapPanel: () => React.ReactNode;
 }
 
 export function ItineraryPanel({
@@ -105,11 +96,7 @@ export function ItineraryPanel({
   numDays,
   startDate,
   onPinTime,
-  chat,
-  advice,
-  onDismissAdvice,
-  renderDayPanel,
-  onSelectedDayChange,
+  renderMapPanel,
   onAdd,
   onRemove,
   onReorder,
@@ -117,16 +104,8 @@ export function ItineraryPanel({
   const [blockDay, setBlockDay] = useState<number | null>(null);
   const [blockTitle, setBlockTitle] = useState("");
   const [dragging, setDragging] = useState<Item | null>(null);
-  const [chatInput, setChatInput] = useState("");
   const [activitiesOpen, setActivitiesOpen] = useState(true);
   const [selectedDayRaw, setSelectedDayRaw] = useState(0);
-
-  const sendChat = () => {
-    const text = chatInput.trim();
-    if (!text || chat.pending) return;
-    chat.onSend(text);
-    setChatInput("");
-  };
 
   // Lodging still under comparison never reaches the itinerary; staged
   // activities are excluded from day grouping but still show in the
@@ -157,11 +136,7 @@ export function ItineraryPanel({
   // Clamp rather than store a raw index: the trip's length can shrink (dates
   // edited, chat removing a day's contents) while a later day is selected.
   const selectedDay = Math.min(selectedDayRaw, Math.max(0, days - 1));
-  const setSelectedDay = (d: number) => {
-    setSelectedDayRaw(d);
-    onSelectedDayChange?.(d);
-  };
-  const dayPanel = renderDayPanel(selectedDay);
+  const setSelectedDay = (d: number) => setSelectedDayRaw(d);
 
   const sensors = useSensors(
     // A small activation distance keeps the row's remove button clickable.
@@ -283,205 +258,133 @@ export function ItineraryPanel({
         onDragEnd={handleDragEnd}
         onDragCancel={() => setDragging(null)}
       >
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_210px]">
-          {/* Left/main area: activities + day schedule on top, the day's
-              route map full-width beneath. */}
-          <div className="min-w-0 space-y-4">
-            <div className="flex items-start gap-4">
-              <ActivitiesDragPanel
-                activities={allActivities}
-                open={activitiesOpen}
-                onToggle={() => setActivitiesOpen((o) => !o)}
-              />
+        {/* One column now: activities + day schedule on top, the trip-wide
+            reference map and distance list full-width beneath. The fixed
+            210px sidebar track that used to sit alongside existed only for
+            the AI chat. */}
+        <div className="space-y-4">
+          <div className="flex items-start gap-4">
+            <ActivitiesDragPanel
+              activities={allActivities}
+              open={activitiesOpen}
+              onToggle={() => setActivitiesOpen((o) => !o)}
+            />
 
-              <div className="min-w-0 flex-1 space-y-4">
-                {/* Day tabs double as drop targets so an item can still be moved
+            <div className="min-w-0 flex-1 space-y-4">
+              {/* Day tabs double as drop targets so an item can still be moved
                     to a day that isn't currently shown — otherwise switching to
                     a day-at-a-time view would remove the only way to drag
                     across days. */}
-                <div className="flex flex-wrap gap-2" data-testid="day-tabs">
-                  {Array.from({ length: days }).map((_, dayIdx) => (
-                    <DayTab
-                      key={dayIdx}
-                      dayIdx={dayIdx}
-                      active={dayIdx === selectedDay}
-                      count={(byDay.get(dayIdx) ?? []).length}
-                      startDate={startDate}
-                      onSelect={() => setSelectedDay(dayIdx)}
-                    />
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-2" data-testid="day-tabs">
+                {Array.from({ length: days }).map((_, dayIdx) => (
+                  <DayTab
+                    key={dayIdx}
+                    dayIdx={dayIdx}
+                    active={dayIdx === selectedDay}
+                    count={(byDay.get(dayIdx) ?? []).length}
+                    startDate={startDate}
+                    onSelect={() => setSelectedDay(dayIdx)}
+                  />
+                ))}
+              </div>
 
-                {[selectedDay].map((dayIdx) => {
-                  const dayItems = byDay.get(dayIdx) ?? [];
-                  const date = startDate
-                    ? new Date(
-                        new Date(startDate).getTime() + dayIdx * 86400000,
-                      ).toLocaleDateString(undefined, {
+              {[selectedDay].map((dayIdx) => {
+                const dayItems = byDay.get(dayIdx) ?? [];
+                const date = startDate
+                  ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(
+                      undefined,
+                      {
                         weekday: "short",
                         month: "short",
                         day: "numeric",
-                      })
-                    : null;
+                      },
+                    )
+                  : null;
 
-                  return (
-                    <DayColumn key={dayIdx} dayIdx={dayIdx}>
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="font-display font-semibold">
-                          Day {dayIdx + 1}{" "}
-                          {date && (
-                            <span className="ml-2 text-sm font-normal text-muted-foreground">
-                              {date}
-                            </span>
-                          )}
-                        </h3>
-                        <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
-                          <Plus className="mr-1 h-3 w-3" /> Block
+                return (
+                  <DayColumn key={dayIdx} dayIdx={dayIdx}>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="font-display font-semibold">
+                        Day {dayIdx + 1}{" "}
+                        {date && (
+                          <span className="ml-2 text-sm font-normal text-muted-foreground">
+                            {date}
+                          </span>
+                        )}
+                      </h3>
+                      <Button variant="ghost" size="sm" onClick={() => setBlockDay(dayIdx)}>
+                        <Plus className="mr-1 h-3 w-3" /> Block
+                      </Button>
+                    </div>
+
+                    {blockDay === dayIdx && (
+                      <div className="mb-3 flex gap-2">
+                        <Input
+                          placeholder="e.g. Relax, no plans"
+                          value={blockTitle}
+                          onChange={(e) => setBlockTitle(e.target.value)}
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            if (blockTitle.trim()) {
+                              onAdd({
+                                kind: "block",
+                                title: blockTitle,
+                                cost_cents: 0,
+                                day_index: dayIdx,
+                              });
+                              setBlockTitle("");
+                              setBlockDay(null);
+                            }
+                          }}
+                        >
+                          Add
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setBlockDay(null);
+                            setBlockTitle("");
+                          }}
+                        >
+                          Cancel
                         </Button>
                       </div>
+                    )}
 
-                      {blockDay === dayIdx && (
-                        <div className="mb-3 flex gap-2">
-                          <Input
-                            placeholder="e.g. Relax, no plans"
-                            value={blockTitle}
-                            onChange={(e) => setBlockTitle(e.target.value)}
+                    {dayItems.length === 0 && (
+                      <p className="text-sm text-muted-foreground">
+                        Nothing scheduled. Add a block above, or drag an activity here.
+                      </p>
+                    )}
+
+                    <SortableContext
+                      items={dayItems.map((i) => i.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <div className="space-y-2">
+                        {dayItems.map((it) => (
+                          <SortableRow
+                            key={it.id}
+                            item={it}
+                            onRemove={onRemove}
+                            onPinTime={onPinTime}
                           />
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              if (blockTitle.trim()) {
-                                onAdd({
-                                  kind: "block",
-                                  title: blockTitle,
-                                  cost_cents: 0,
-                                  day_index: dayIdx,
-                                });
-                                setBlockTitle("");
-                                setBlockDay(null);
-                              }
-                            }}
-                          >
-                            Add
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              setBlockDay(null);
-                              setBlockTitle("");
-                            }}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      )}
-
-                      {advice?.day === dayIdx && (
-                        <div
-                          className="mb-3 flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/5 py-1 pl-2.5 pr-1 text-xs"
-                          data-testid="advisor-note"
-                        >
-                          <Lightbulb className="h-3 w-3 shrink-0 text-warning-foreground" />
-                          <p className="flex-1 leading-snug text-muted-foreground">{advice.note}</p>
-                          <button
-                            onClick={onDismissAdvice}
-                            aria-label="Dismiss suggestion"
-                            data-testid="advisor-dismiss"
-                            className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      )}
-
-                      {dayItems.length === 0 && (
-                        <p className="text-sm text-muted-foreground">
-                          Nothing scheduled. Add a block above, or drag an activity here.
-                        </p>
-                      )}
-
-                      <SortableContext
-                        items={dayItems.map((i) => i.id)}
-                        strategy={verticalListSortingStrategy}
-                      >
-                        <div className="space-y-2">
-                          {dayItems.map((it) => (
-                            <SortableRow
-                              key={it.id}
-                              item={it}
-                              onRemove={onRemove}
-                              onPinTime={onPinTime}
-                            />
-                          ))}
-                        </div>
-                      </SortableContext>
-                    </DayColumn>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Day map, full width of the main area — no longer squeezed into
-                a side column sharing space with a chat toggle. */}
-            <div data-testid="day-map-row">{dayPanel}</div>
-          </div>
-
-          {/* Persistent chat sidebar — always visible alongside the map, not a
-              toggle sharing one slot with it. Styled like the app's own left
-              nav (bg-sidebar/text-sidebar-foreground) rather than a neutral
-              card, per the "looks like the left nav" request. */}
-          <div
-            className="flex flex-col rounded-2xl bg-sidebar p-3 text-sidebar-foreground"
-            data-testid="itinerary-chat"
-          >
-            <h3 className="flex items-center gap-1.5 font-display text-sm font-semibold">
-              <MessageCircle className="h-4 w-4" /> Ask AI
-            </h3>
-            <p className="mb-2 mt-1 text-xs text-sidebar-muted">
-              "Move the aquarium to day 3" · "what's good near day 2's stops?"
-            </p>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
-              {chat.messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={`max-w-full rounded-xl px-3 py-2 text-sm ${
-                    m.role === "user"
-                      ? "bg-sidebar-active text-sidebar-foreground"
-                      : "bg-sidebar-active/40 text-sidebar-foreground"
-                  }`}
-                >
-                  {m.content}
-                </div>
-              ))}
-              {chat.pending && (
-                <div className="w-16 rounded-xl bg-sidebar-active/40 px-3 py-2 text-sm text-sidebar-muted">
-                  …
-                </div>
-              )}
-            </div>
-            <div className="mt-3 space-y-2">
-              <Input
-                placeholder="Ask a question…"
-                value={chatInput}
-                data-testid="itinerary-chat-input"
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") sendChat();
-                }}
-                className="border-sidebar-active bg-sidebar-active/20 text-sidebar-foreground placeholder:text-sidebar-muted"
-              />
-              <Button
-                size="sm"
-                onClick={sendChat}
-                data-testid="itinerary-chat-send"
-                disabled={!chatInput.trim() || chat.pending}
-                className="w-full"
-              >
-                <SendHorizonal className="mr-1.5 h-4 w-4" /> Send
-              </Button>
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DayColumn>
+                );
+              })}
             </div>
           </div>
+
+          {/* Reference map + distance list, full width. Rendered once, outside
+              the selected-day branch above — it shows the whole trip's
+              activities, not the selected day's. */}
+          <div data-testid="activity-map-row">{renderMapPanel()}</div>
         </div>
 
         <DragOverlay>{dragging ? <ItemRow item={dragging} dragging /> : null}</DragOverlay>

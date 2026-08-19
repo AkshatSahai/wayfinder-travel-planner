@@ -172,6 +172,31 @@ export interface LatLng {
   lng: number;
 }
 
+/**
+ * Pull coordinates off a `trip_items.details` blob.
+ *
+ * Reads `details.coords.{lat,lng}` — the convention every writer in this
+ * codebase uses (AI enrichment, lodging, `enrichActivityLocation`) — except
+ * one: activities added via the Places browse dialog ("Anytime — food &
+ * places") were saved with flat `details.lat`/`details.lng` instead, because
+ * `mapPlace()` in google-places.server.ts returns them that way and the Add
+ * handler in activities-panel.tsx spread that object straight into `details`.
+ * That's fixed at the write path too, but rows already saved under the flat
+ * shape still need to plot, hence the fallback below. `details` is unvalidated
+ * JSON, so nothing catches this class of mismatch at write time.
+ */
+export function coordsOf(details: unknown): LatLng | null {
+  const d = (details ?? {}) as Record<string, unknown>;
+  const c = d.coords as { lat?: number; lng?: number } | undefined;
+  if (c && typeof c.lat === "number" && typeof c.lng === "number") {
+    return { lat: c.lat, lng: c.lng };
+  }
+  if (typeof d.lat === "number" && typeof d.lng === "number") {
+    return { lat: d.lat, lng: d.lng };
+  }
+  return null;
+}
+
 const EARTH_RADIUS_MILES = 3958.8;
 
 export function haversineMiles(a: LatLng, b: LatLng): number {

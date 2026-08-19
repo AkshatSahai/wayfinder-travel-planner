@@ -3,6 +3,10 @@
 
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_URL = "https://router.project-osrm.org/route/v1/driving";
+const OSRM_TABLE_URL = "https://router.project-osrm.org/table/v1/driving";
+/** Coordinates per `table` request. The demo server's ceiling is 100 including
+ * the source; stay well under it rather than discovering the limit in prod. */
+const CHUNK = 50;
 const TIMEOUT_MS = 8000;
 const USER_AGENT = "Wayfinder/1.0 (trip planner)";
 
@@ -82,6 +86,69 @@ export async function getRouteForCoords(
     // OSRM geojson is [lng, lat]; Google wants {lat, lng}.
     path: (route.geometry?.coordinates ?? []).map(([lng, lat]) => ({ lat, lng })),
   };
+}
+
+export interface DistanceLeg {
+  /**
+   * Road miles. Null when this OSRM build didn't return the `distance`
+   * annotation — the caller substitutes straight-line distance, which it can
+   * do because it still holds both coordinates.
+   */
+  miles: number | null;
+  hours: number;
+}
+
+/**
+ * Driving distance and time from ONE origin to many targets.
+ *
+ * Uses OSRM's `table` service rather than N calls to `getRouteForCoords`:
+ * `sources=0` asks for just the origin's row of the matrix, so a trip with
+ * twenty activities costs one request instead of twenty. The public demo
+ * server is rate-limited and this runs whenever the activity set changes.
+ *
+ * Returns an array index-aligned with `targets`; an entry is null when that
+ * leg couldn't be routed. Never throws for a single unroutable target — only
+ * a transport-level failure propagates.
+ */
+export async function getDistancesFrom(
+  origin: { lat: number; lng: number },
+  targets: { lat: number; lng: number }[],
+): Promise<(DistanceLeg | null)[]> {
+  if (targets.length === 0) return [];
+
+  const out: (DistanceLeg | null)[] = [];
+  for (let start = 0; start < targets.length; start += CHUNK) {
+    const chunk = targets.slice(start, start + CHUNK);
+    const coords = [origin, ...chunk].map((p) => `${p.lng},${p.lat}`).join(";");
+    const url = `${OSRM_TABLE_URL}/${coords}?sources=0&annotations=duration,distance`;
+    const res = await withTimeout(fetch(url, { headers: { "User-Agent": USER_AGENT } }));
+    if (!res.ok) throw new Error(`osrm table failed: ${res.status}`);
+    const json = (await res.json()) as {
+      code: string;
+      durations?: (number | null)[][];
+      distances?: (number | null)[][];
+    };
+    if (json.code !== "Ok") throw new Error(`osrm table failed: ${json.code}`);
+
+    // Row 0 is the origin's row; column 0 is the origin itself, so the target
+    // at chunk index i sits at column i + 1.
+    const durations = json.durations?.[0] ?? [];
+    const distances = json.distances?.[0] ?? [];
+
+    chunk.forEach((_target, i) => {
+      const seconds = durations[i + 1];
+      if (typeof seconds !== "number") {
+        out.push(null);
+        return;
+      }
+      const meters = distances[i + 1];
+      out.push({
+        miles: typeof meters === "number" ? meters / 1609.34 : null,
+        hours: seconds / 3600,
+      });
+    });
+  }
+  return out;
 }
 
 // Route origin → (waypoints…) → destination as one chained OSRM path.

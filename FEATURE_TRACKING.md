@@ -19,45 +19,78 @@ human run-through.)
       Untested locally. Added 2026-08-17.
 - [ ] **Live maps in local dev** — maps are reported to only work in production; confirm
       whether this is still true and why. Added 2026-08-17.
-- [ ] **Per-item pinned arrival time + conflict check** (itinerary timing fix) — confirm pinning
-      a specific activity's time flags a realistic conflict (not enough travel time from the
-      prior stop) and doesn't false-positive on reasonable schedules. Added 2026-08-17.
-- [ ] **Quieter advisor banner** (itinerary timing fix) — confirm the restyled A4 advisor note
-      still surfaces after a drag-reorder, reads correctly, and no longer references a stale or
-      mismatched time. Added 2026-08-17.
-- [ ] **Geography-aware clustering in "Build out itinerary"** — confirm against the reported real
-      case (four Merrillville/Michigan City, IN venues within ~5 minutes of each other) that they
-      now land on the same day; tune `CLUSTER_RADIUS_MILES` in `geo-cluster.ts` (currently 9) if
-      it over- or under-groups on real trips. Added 2026-08-17.
-- [ ] **"Remove from itinerary" unschedules instead of deleting** — confirm removing a scheduled
-      activity from the Itinerary tab returns it to the Activities tab's staged list rather than
-      deleting it, and that deleting from the Activities tab still actually deletes it. Added
-      2026-08-17.
-- [ ] **Draggable activities panel** (left side of the Itinerary tab) — confirm dragging a staged
-      activity onto a day schedules it, dragging a scheduled one back onto the panel unschedules
-      it, the panel's collapse toggle works, and the day map/notes stay in sync either way. Added
-      2026-08-17.
-- [ ] **Chat research mode** — confirm an open-ended question ("what are good restaurants near
-      day 2's stops?") returns real, named Places results with reasoning (not hallucinated), and
-      that a genuinely ambiguous question gets a clarifying reply instead of a guess. Added
-      2026-08-17.
-- [ ] **Day map location fix** — confirm a day with activities added via the Places browse dialog
-      (e.g. "Anytime — food & places") now renders pins and a route instead of "nothing to plot,"
-      both for already-saved activities (reader fallback) and newly-added ones (writer fix). Added
-      2026-08-17.
-- [ ] **Manually-added activities now get geocoded** — confirm a new activity added via the manual
-      form (typed location, autocompleted location, and no location at all) ends up with real
-      coordinates and plots on the day map once scheduled; confirm browse-dialog/chat-added
-      activities are unaffected (no duplicate lookup). Added 2026-08-17.
-- [ ] **Existing coordinate-less activities** — for any activity added before this fix (e.g. the
-      reported "Albanese Candy Factory"), confirm the workaround still works: unschedule it, then
-      either re-add it or re-run "Build out itinerary" to pick up real coordinates. Added
-      2026-08-17.
-- [ ] **Itinerary layout: full-width map + persistent chat sidebar** — confirm activities panel +
-      day schedule sit side by side at the top, the day map renders full-width beneath at the
-      taller height, and the chat sidebar (dark-green, sidebar-styled) is always visible on the
-      right with no toggle. **Specifically test a day with 4+ activities** — confirm markers stay
-      distinct and the route is legible, not just the 3-item cases used so far. Added 2026-08-17.
+- [x] **Per-item pinned arrival time + conflict check** — **VERIFIED 2026-08-19.** Pinning the
+      3rd item on a day to 00:15 produced: `"Field Museum (legacy flat coords)" is pinned for
+      00:15, but the stops before it need until roughly 03:33.` The chip then read `12:15 AM`.
+      Now surfaces as a toast, not the inline pill (that pill was shared with the removed drag
+      advisor). Not yet checked for false positives on a reasonable schedule.
+- [x] **"Remove from itinerary" unschedules instead of deleting** — **VERIFIED 2026-08-19.**
+      Unscheduling from the day column returned the row to the activities panel as
+      "Unscheduled" with toast "Moved back to your activities list"; the row was not deleted.
+      The Activities tab's own delete button is still untested.
+- [x] **Draggable activities panel** — **VERIFIED 2026-08-19.** Dragged "Unscheduled Art Walk"
+      from the panel onto Day 4: panel badge changed Unscheduled → Day 4 and the row appeared in
+      the day column. The collapse toggle is still untested.
+- [ ] **Manually-added activities now get geocoded** — still open; needs `GOOGLE_API_KEY`, which
+      was not available for this pass. Added 2026-08-17.
+- [ ] **Existing coordinate-less activities** — for any activity added before the v0.7.2 fix (e.g.
+      the reported "Albanese Candy Factory"), the workaround has changed with v0.9.0: "re-run
+      Build out itinerary" is no longer available, so the remaining path is to delete and re-add
+      it from the Activities tab, which routes through `enrichActivityLocation`. Confirm that
+      works. Updated 2026-08-19.
+
+### v0.9.0 (static activity map) — VERIFIED 2026-08-19
+
+Headless Edge via `puppeteer-core` against the live Supabase project, on a seeded 4-day Chicago
+trip: booked stay + a lodging *candidate*, activities across 3 days, a pinned arrival time, a
+**legacy flat `details.lat`/`lng`** row, a no-coords row, and an unscheduled activity.
+
+- [x] **No AI calls from the Itinerary tab** — **PASS.** All 17 server-fn calls observed across
+      the whole session decoded to: `getTrip` ×11, `distancesFromLodging` ×3, `updateTripItems`,
+      `updateTripItem`, `addTripItem`. Zero deleted handlers, zero AI-backed handlers, zero
+      direct AI HTTP, zero undecoded ids. Dev-server log shows no Gemini activity.
+      **Positive control:** the same probe caught `searchTransport` immediately on the Transport
+      tab, so the silence is a real negative rather than a broken instrument.
+- [x] **Trip-wide activity map** — **PASS, partial.** `activity-map-empty` absent (proves a
+      non-empty pin set incl. the booked stay), and the distance table was byte-identical across
+      all 4 day tabs — the real "not day-scoped" proof. Pins were **not visually confirmed**: no
+      `VITE_GOOGLE_MAPS_KEY` locally, and `localhost` isn't on the key's referrer allowlist, so
+      the map renders "Map isn't connected yet". Visual confirmation still owed in production.
+- [x] **Distance + drive time list** — **PASS.** Real OSRM road distances from the booked Loop
+      hotel: Shedd 1.9 mi/5m, Field 1.7 mi/5m, Lincoln Park Zoo 3.4 mi/9m, Powers Rec Area
+      10.6 mi/21m — all plausible for Chicago. The no-coords row read "No location" and was named
+      in the unplotted footnote. The Evanston lodging **candidate** did not anchor distances.
+      Table refreshed after adding a block, no reload.
+- [x] **No-lodging state** — **PASS.** Trip B showed "Book a stay on the Lodging tab to see how
+      far each activity is from it."; headers were `ACTIVITY / CATEGORY / WHEN / COST` with no
+      distance columns; map panel still rendered its pin set; `distancesFromLodging` was
+      correctly **not called** at all.
+- [~] **Straight-line fallback** — **NOT REPRODUCED.** The public OSRM server returned the
+      `distance` annotation on every request, so the fallback never fired. Untested, not passed.
+- [x] **Legacy flat-coords rows still plot** — **PASS.** The single highest-value assertion for
+      this change: "Field Museum (legacy flat coords)" resolved to 1.7 mi, confirming the
+      `coordsOf` fallback survived being salvaged out of the deleted `itinerary-day-panel.tsx`
+      into `workspace-store.ts`.
+- [x] **Existing data unaffected** — **PASS.** Pinned time rendered, 4 day tabs correct, booked
+      stay anchored distances, budget read `$1,030 / $2,000` — the $700 lodging candidate and the
+      staged activity both correctly excluded, matching pre-v0.9.0 semantics.
+- [x] **Removed UI is gone** — **PASS.** `itinerary-chat`, `advisor-note`, and
+      `build-itinerary-btn` all absent. Activities tab copy now reads "1 not scheduled yet, 5 on
+      your itinerary — drag them onto a day from the Itinerary tab."
+
+### Removed in v0.9.0 without ever being verified
+
+These were built in v0.5.0–v0.8.0 and deleted before anyone confirmed they worked in a live
+browser. Recorded rather than deleted so the cost of shipping unverified is visible: five
+features' worth of work, none of it ever known to be correct in production.
+
+- ~~Geography-aware clustering in "Build out itinerary"~~ — removed with the AI scheduler.
+- ~~Chat research mode~~ — removed with the itinerary chat.
+- ~~Quieter advisor banner~~ — removed with the drag advisor.
+- ~~Day map location fix (per-day route rendering)~~ — the underlying `coordsOf` reader fallback
+  **survived** and moved to `workspace-store.ts`; only the per-day route map went. Its
+  verification is now covered by "Trip-wide activity map" above.
+- ~~Itinerary layout: full-width map + persistent chat sidebar~~ — superseded one release later.
 
 ## Scoped, not yet built
 (Decided to build, not started or paused.)

@@ -1,5 +1,67 @@
 # Wayfinder Changelog
 
+## v0.9.0 — 2026-08-19
+
+### Overview
+
+The Itinerary tab no longer has any AI in it.
+
+Four releases' worth of machinery lived on this screen: an AI scheduler that decided which day
+each activity belonged to, a chat that rewrote the plan from natural language and answered
+research questions, an advisor that second-guessed manual drags, and a map that re-routed
+whichever day you were looking at and annotated it with model-written notes. All of it is gone.
+
+What replaces it is deliberately plain: **one map showing every activity you've added, and a list
+of how far each one is from where you're staying.** That's the question a traveler actually has
+when they're looking at a plan — "is this thing near my hotel?" — and answering it needs real
+driving distances, not a language model.
+
+Day-by-day planning itself stays, entirely manual. Day tabs, dragging an activity onto a day,
+dragging it back to unschedule it, adding blocks, and pinning an arrival time all work exactly as
+they did. The only thing removed is the software's opinion about any of it.
+
+### Updates
+
+#### Itinerary
+
+**New: a static activity map**
+
+- Plots every activity on the trip, whichever day it's on and whether or not it's scheduled at
+  all. It no longer changes when you switch day tabs — it's a reference for the whole trip.
+- The booked stay is pinned alongside them and ringed so it reads differently from the activities
+  around it.
+- Bigger, too — it spans the full width now that nothing is sharing the row with it, so a busy trip
+  stays readable without zooming around.
+
+**New: distance and drive time from your stay**
+
+- A list beneath the map shows how far each activity is from your booked stay, in miles, and how
+  long it takes to drive there.
+- It keeps up as you go — add or remove an activity and the list updates with it.
+- With no stay booked yet, the map still shows every activity and the list says so plainly
+  instead of showing empty columns.
+- Occasionally a driving distance can't be worked out for a stop. Rather than leave the row blank,
+  it shows the straight-line distance instead, marked with an asterisk so you know the difference.
+
+**Removed**
+
+- **"Build out itinerary"** — the button that let AI sort your activities into days for you.
+  Arrange them yourself by dragging.
+- **The itinerary chat** — both editing your plan by typing ("move the aquarium to day 3") and
+  asking it for recommendations ("what's good near day 2's stops?").
+- **The drag advisor** — the note that appeared after a drag suggesting the day was too long, too
+  spread out, or too expensive.
+- **The per-day route map and its notes** — the map that showed only the selected day's stops,
+  its driving estimate, and the tips that came with it.
+
+**Kept**
+
+- Day tabs, drag-to-schedule, drag-to-unschedule, and adding blocks — all manual, all unchanged.
+- Pinning an arrival time, including the check that warns when the stops before it can't be done
+  in time. That check has always been a local calculation, never a model call; it now reports
+  through a toast rather than an inline note.
+- Budget behavior is unchanged — activities still count as spend only once they're on a day.
+
 ## v0.8.0 — 2026-08-17
 
 ### Overview

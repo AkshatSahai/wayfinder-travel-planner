@@ -6,9 +6,10 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-17** — after **v0.5.0** shipped to production: the activities/itinerary AI
-overhaul (A1–A5), the Places photo-proxy security fix, and live collaboration (B1–B3). B4 (presence)
-is the one piece of that spec not attempted.
+Last updated: **2026-08-19** — after **v0.9.0** removed all AI from the Itinerary tab (the A2
+scheduler, A3 chat, A4 advisor, and A5 day map) and replaced it with a static activity map plus a
+distance list. Several §3 subsections below are now marked **SUPERSEDED**; they are kept on
+purpose — read them before proposing to rebuild anything they describe.
 
 ---
 
@@ -196,6 +197,10 @@ still show the task as outstanding.
 
 ### Itinerary day view: droppable ids and collision detection (v0.5.0 A5)
 
+> **Partly superseded by v0.9.0.** The droppable-id and collision-detection rules below are still
+> live and still load-bearing — day tabs and drag-to-schedule survived. The `dayPlan` caching and
+> Google-notes paragraphs at the end of this section describe code that no longer exists.
+
 The Itinerary tab shows one day at a time (tabs + list on the left, map on the right). Two
 non-obvious things make dragging across days work:
 
@@ -227,7 +232,14 @@ The app handles this correctly; it is a key-config gap, not a code bug. Add
 accepting a spoofed `Referer` header is *not* evidence the JS API will accept an origin — they
 match differently.
 
-### The drag advisor never calls the AI speculatively (v0.5.0 A4)
+### The drag advisor never calls the AI speculatively (v0.5.0 A4) — SUPERSEDED (v0.9.0)
+
+> **The drag advisor was removed in v0.9.0.** `assessDay`, `averageDayCost`, and
+> `adviseItineraryChange` are all gone. Kept below because the *reasoning* still applies to
+> anything similar: if you ever add a feature that calls a model in response to routine user
+> activity, the local-gate pattern and the anti-nag rules here are the bar to clear. Note that
+> `checkArrivalConflict` — the pin-a-time check — survived, precisely because it never called a
+> model at all.
 
 `assessDay()` in `src/lib/itinerary-advice.ts` is a pure local heuristic pass that runs after a
 manual drag. **Only if it returns a signal does `adviseItineraryChange` call Gemini at all.** A
@@ -263,7 +275,13 @@ desync A3 was meant to prevent. `stagedActivities()` still exists and still driv
 "Build out itinerary" acts on — the button's disabled state keys off the *unscheduled* count,
 not the list length.
 
-### Itinerary chat rewrites positions, and that is not optional
+### Itinerary chat rewrites positions, and that is not optional — SUPERSEDED (v0.9.0)
+
+> **The itinerary chat was removed entirely in v0.9.0** — `chatItinerary`, its operations schema,
+> research mode, and the undo snapshot are all gone. Kept below for two durable lessons that
+> outlive it: a model that edits data should return **operations, not prose**, and any batch of
+> fuzzy-matched edits needs an undo. `renumberDay()` still exists and is still the chokepoint for
+> anything that places rows on a day.
 
 `chatItinerary` returns **operations** (`move` / `remove` / `add` / `swap_days`), never prose the
 client has to interpret. Guardrails match `buildItinerary`: operations naming an unknown id are
@@ -330,7 +348,14 @@ Fix and the resulting design, both in `workspace-store.ts`:
   list and map keep their existing full width by default. **Superseded in v0.7.0** — see below;
   the `Sheet` read as a detached popup rather than part of the screen, so it was replaced.
 
-### Itinerary intelligence, drag-and-drop, and chat research (v0.7.0)
+### Itinerary intelligence, drag-and-drop, and chat research (v0.7.0) — PARTLY SUPERSEDED (v0.9.0)
+
+> **Two of these four survived v0.9.0.** "Remove = unschedule for activities" and the draggable
+> activities panel (including the `list-` id prefix) are still live and still correct. The
+> clustering pass (`geo-cluster.ts`) and everything about chat — the inline tab switcher and
+> research mode — were deleted with the AI. The clustering entry is worth keeping for its finding:
+> **the model was never computing distance**, it was pattern-matching on coordinate text. If
+> proximity ever matters again, measure it.
 
 **Real distance, not inferred proximity.** `buildItinerary` was trusting Gemini to infer
 geographic grouping from raw `lat,lng` text in the prompt — no real distance was ever computed.
@@ -466,7 +491,13 @@ field-name mismatch. Traced to three compounding gaps:
   to staged) and either re-added or picked up by a re-run of "Build out itinerary" (its own
   enrichment now finds it, since it's staged and coordinate-less).
 
-### Itinerary layout: full-width map + persistent chat sidebar (v0.8.0)
+### Itinerary layout: full-width map + persistent chat sidebar (v0.8.0) — SUPERSEDED (v0.9.0)
+
+> **The chat sidebar is gone and the grid is one column again.** The map-height finding below is
+> the part that carried forward: readability under a busy day was purely a function of container
+> height, not any code-level truncation, and `FitToPins` has no pin-count ceiling. That's why
+> v0.9.0 could point the same map at the *whole trip's* activities and only needed to raise the
+> height again (450px → 520px).
 
 The map and chat used to share one toggleable slot (`rightView: "map" | "chat"`) beside the day
 column — cramped (map got only half the row) and only one visible at a time. Reworked in
@@ -494,7 +525,70 @@ column — cramped (map got only half the row) and only one visible at a time. R
   This isn't the same as viewport height (`h-screen`, like the *actual* `AppSidebar`) — it's scoped
   inside the Itinerary tab's own content area, not a sibling of the page shell.
 
-### Itinerary building: the planner only sees staged activities
+### The Itinerary tab has no AI in it (v0.9.0)
+
+This is a deliberate, explicit reversal of four releases of work (A2–A5, v0.6.0's chat drawer,
+v0.7.0's clustering and research mode, v0.8.0's chat sidebar). It was scoped as a full replacement,
+not an incremental change, and confirmed as such before any code was deleted. **Don't "restore"
+any of it without a new decision** — the superseded sections above explain what each piece did and
+why it was built, which is exactly the material that makes rebuilding it tempting.
+
+**What survived, and why the split falls where it does.** The rule applied was *remove the
+software's opinion, keep the traveler's tools*:
+
+| Kept | Removed |
+|---|---|
+| Day tabs, drag-to-day, drag-to-unschedule, blocks | `buildItinerary` (AI day assignment) |
+| Pinned arrival time + `checkArrivalConflict` | `chatItinerary` (+ research mode) |
+| `committedItems` / staged-vs-scheduled semantics | `adviseItineraryChange` (drag advisor) |
+| `renumberDay`, the `day-N`/`daytab-N`/`list-` id prefixes | `dayPlan` (per-day route + AI notes) |
+
+`checkArrivalConflict` is the one advisory left. It survived the cut **because it never called a
+model** — it's a pure local heuristic, and it answers a question the traveler asked by pinning a
+time rather than volunteering an opinion about a drag. It now reports through a toast: the inline
+pill it used to render in was shared with the A4 advisor, and that pill went with the advisor.
+
+**Three consequences that are easy to get wrong if you touch this later:**
+
+- **The map is trip-wide, not day-scoped.** `renderMapPanel` deliberately takes no day index. It
+  renders once, below the day row, and is unaffected by `selectedDay`. Re-scoping it to the
+  selected day would quietly recreate the thing that was removed.
+- **`coordsOf()` moved to `workspace-store.ts` and must stay reachable.** It was salvaged out of
+  the deleted `itinerary-day-panel.tsx`. Its `details.coords` → flat `details.lat`/`details.lng`
+  fallback is the whole of the v0.7.1 fix; losing it silently un-plots every activity added
+  through the Places browse dialog before that release.
+- **`lookupPlaceDetails` and `searchTextCategory` are NOT orphans.** They sit in the same provider
+  file as the deleted `searchNearby` and look equally AI-adjacent. They are not: `lookupPlaceDetails`
+  is the v0.7.2 geocoding chokepoint every activity insert runs through, and `searchTextCategory`
+  backs the Activities browse dialog. Deleting either breaks activity coordinates with no error.
+
+### Distances come from one OSRM `table` call, not N route calls (v0.9.0)
+
+`getDistancesFrom()` (`providers/osrm.server.ts`) uses OSRM's **table** service with `sources=0` —
+one request returns the origin's row of the full matrix, so a trip with twenty activities costs
+one call rather than twenty. The public demo server is rate-limited and this runs whenever the
+activity set changes, so the naive loop over `getRouteForCoords` would have been a real problem
+rather than a stylistic one. Targets are chunked at 50 (the demo server's ceiling is 100
+coordinates including the source).
+
+⚠️ **Not every OSRM build returns the `distance` annotation**, only `duration`. When it's absent
+the leg comes back with `miles: null` and `distancesFromLodging` (`travel.functions.ts`)
+substitutes `haversineMiles` — straight-line, marked with an asterisk in the UI so it isn't
+presented as road distance. The drive time is real either way. The fallback lives in the caller,
+not the provider, so `osrm.server.ts` stays free of app imports (pulling in `workspace-store`
+would drag zustand into the server bundle for one pure function).
+
+The whole thing is non-fatal by design: a routing outage returns every leg unrouted plus an
+`error` string, and the map and activity list still render. Distances are a convenience on this
+screen, not something worth failing the tab over.
+
+### Itinerary building: the planner only sees staged activities — SUPERSEDED (v0.9.0)
+
+> **`buildItinerary` was deleted in v0.9.0**, so nothing below describes live code. Kept for the
+> general lesson, which applies to any future feature that lets a model assign positions: **don't
+> trust the model with completeness, range, or ordering.** It numbered `sort_order` from 0 every
+> time with no knowledge of rows already on the day; the client-side renumbering
+> (`renumberDay`, still live) is what made that safe.
 
 `buildItinerary` (`trip-ai.functions.ts`) is sent only the **staged** activities, never the rows
 already on the itinerary. Two consequences that both bit during v0.5.0 A2:
@@ -700,6 +794,35 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.9.0 (Itinerary tab: static activity map, no AI) — 2026-08-19
+
+**Verified end-to-end in a live browser on 2026-08-19** (headless Edge + puppeteer-core, live
+Supabase project, seeded 4-day trip). See §3's "The Itinerary tab has no AI in it (v0.9.0)"
+and "Distances come from one OSRM `table` call" for the design, and `FEATURE_TRACKING.md` for
+the per-item evidence. The acceptance criterion passed: **all 17 server-fn calls observed across
+the session were non-AI** (`getTrip`, `distancesFromLodging`, `updateTripItem(s)`, `addTripItem`),
+with a positive control confirming the probe catches `searchTransport` on the Transport tab.
+One gap: map pins were asserted but **not visually confirmed** — no Maps key locally. **No schema or migration change** — purely
+code. `npx tsc --noEmit`, `npx eslint src/`, and `npm run build` all pass (eslint clean apart from
+the 7 pre-existing `react-refresh` warnings, which is the documented "source is fine" tell).
+
+A full replacement of the Itinerary screen's behavior, not an incremental change. Removed:
+`buildItinerary` (A2 AI scheduler) and `geo-cluster.ts`, `chatItinerary` (A3, including v0.7.0's
+research mode), `adviseItineraryChange` (A4 drag advisor) and `assessDay`/`averageDayCost`,
+`dayPlan` (A5 per-day route map + AI notes) and `itinerary-day-panel.tsx`, and `searchNearby`.
+Added: `ActivityMapPanel` (a trip-wide static map + a distance/drive-time list),
+`getDistancesFrom` in the OSRM adapter, and the `distancesFromLodging` server fn.
+
+Day tabs, drag-to-schedule, drag-to-unschedule, blocks, pinned arrival times, and the budget's
+staged-vs-scheduled treatment are all unchanged — the three scope questions that decided this
+(keep day grouping? keep pinned times? change the budget?) were asked and answered before any
+deletion, and all three came back "keep current behavior."
+
+⚠️ **`whats-new-dialog.tsx` renders `CHANGELOG.md` directly** (`?raw` import) and derives
+`CURRENT_VERSION` from its first `## vX.Y.Z` heading. The changelog entry is therefore user-facing
+product copy, not just a developer record — it's what travelers see in the What's New dialog, and
+adding an entry is what bumps the version badge in the sidebar.
 
 ### v0.8.0 (itinerary layout: full-width map + persistent chat sidebar) — 2026-08-17
 
@@ -938,6 +1061,20 @@ all — so waiting on `trip-meta-bar` for them is the wrong assertion. Its *abse
 
 ## 6. Known gaps — verified vs not
 
+**Verified against live Supabase + OSRM + real browser (v0.9.0, 2026-08-19):** zero AI calls from
+the Itinerary tab (all 17 server-fn calls decoded and non-AI, with a positive control proving the
+probe catches an AI handler when one fires); trip-wide map pin set non-empty and identical across
+all day tabs; real OSRM distances from the booked stay with the lodging *candidate* correctly
+ignored; legacy flat-coords rows still plot (the `coordsOf` salvage); pinned arrival time + its
+conflict toast; drag-to-schedule; unschedule-not-delete; add block; the no-lodging state; and
+budget totals unchanged from pre-v0.9.0 semantics.
+
+⚠️ **Two gaps remain on v0.9.0.** (1) **Map pins were never seen.** Their existence was inferred
+from the absence of the empty state plus the distance table, which is real evidence but not a
+rendering check — no `VITE_GOOGLE_MAPS_KEY` locally, and `localhost` is not on the key's referrer
+allowlist anyway. Confirm in production. (2) **The straight-line mileage fallback never fired** —
+public OSRM returned road distance every time — so that branch is untested, not passing.
+
 **Not yet verified — v0.6.0 (itinerary timing fix):** the day-start-time field, per-item pinned
 arrival time + its conflict check, the quieter advisor banner, and the chat drawer all need a real
 multi-day trip run-through — none of it has been exercised against a live Supabase project (the
@@ -1027,6 +1164,16 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
+- ⚠️ **Two `claude-*` verification users from the v0.9.0 pass are still in Supabase auth**
+  (2026-08-19). Their trips and `trip_items` were deleted via the owner's own JWT and confirmed
+  gone (`trips` and `trip_items` both return `[]`), so **no orphan data remains** — only the auth
+  rows. They could not be removed because `SUPABASE_SERVICE_ROLE_KEY` was not available on this
+  machine (no `.env`; only the two *public* Supabase values are recoverable from the deployed
+  bundle). One is `claude-v090-verify-1787117562267@example.com`; the other is an earlier
+  `claude-v090-verify-*@example.com` orphaned by a failed first seed (its email was not captured
+  before the script died — the seeder now writes credentials to disk immediately after signup so
+  that cannot recur). Delete both via `auth/v1/admin/users` with the service-role key, the same
+  way the previous 10 were cleared.
 - ~~Leftover `claude-*` verification users in Supabase auth.~~ **Done 2026-08-17** — all 10
   (3 from v0.4.0, 7 from v0.5.0) deleted via `auth/v1/admin/users` with the service-role key, which
   is now in `.env`. Zero `claude-*` accounts remain. Future test users can be scripted away the

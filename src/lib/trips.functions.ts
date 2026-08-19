@@ -157,19 +157,22 @@ export const getTrip = createServerFn({ method: "POST" })
 
 /**
  * Best-effort geocoding for a freshly-added activity, run for every source
- * (manual form, Places browse, chat's `add` op) rather than each entry point
- * doing its own lookup — the day map only plots `details.coords`, and the
- * manual-add path in particular never resolved it despite
+ * (manual form, Places browse) rather than each entry point doing its own
+ * lookup — the Itinerary map only plots what `coordsOf()` can find, and the
+ * manual-add path in particular never resolved coordinates at all despite
  * `place-autocomplete.tsx`'s docstring claiming it happens "server-side at
  * submit" (that claim had nothing behind it before this).
  *
- * A no-op when coords already exist (browse/chat already attach real ones),
- * so this never duplicates a lookup that already succeeded. When there's no
- * typed location either, falls back to the trip's destination as the
- * geocoding hint — the same "resolve from name + destination" fallback
- * `buildItinerary`'s own enrichment uses. Never throws: a missing key, an
- * outage, or zero results just means the activity saves without coordinates,
- * same as before this existed.
+ * Since v0.9.0 this is the ONLY geocoding path for activities: the AI
+ * itinerary builder that used to enrich staged activities as a side effect of
+ * scheduling them is gone, so an activity that isn't geocoded here will never
+ * be geocoded at all. Don't make it conditional.
+ *
+ * A no-op when coords already exist (the browse dialog attaches real ones), so
+ * this never duplicates a lookup that already succeeded. When there's no typed
+ * location either, falls back to the trip's destination as the geocoding hint.
+ * Never throws: a missing key, an outage, or zero results just means the
+ * activity saves without coordinates, same as before this existed.
  */
 type TripLookupContext = {
   supabase: {
