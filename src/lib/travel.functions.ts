@@ -182,3 +182,66 @@ export const distancesFromLodging = createServerFn({ method: "POST" })
       };
     }
   });
+
+/** One leg of a day's chain: `from_id` → `to_id`. */
+export interface DayLeg {
+  from_id: string;
+  to_id: string;
+  miles: number | null;
+  hours: number | null;
+  straight_line: boolean;
+}
+
+/**
+ * Every pairwise driving leg between a day's located stops.
+ *
+ * Returns the whole matrix as a flat list, NOT just the legs of the order the
+ * caller happens to be showing. That's deliberate: the day's order changes on
+ * every drag, and legs are sequence-dependent, so returning only the current
+ * sequence would mean a round trip per drop. With every pair in hand the client
+ * looks up the legs it needs and a reorder costs nothing.
+ *
+ * This is a different measurement from `distancesFromLodging` above and the two
+ * must not be conflated — that one is stay → activity and is order-independent;
+ * this one is stop → next stop and is entirely about order.
+ *
+ * Never throws: an outage returns an empty list plus an `error` string, and the
+ * day schedule renders without leg labels rather than failing.
+ */
+export const dayDistanceMatrix = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        stops: z.array(z.object({ id: z.string(), lat: z.number(), lng: z.number() })).max(40),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ legs: DayLeg[]; error: string | null }> => {
+    if (data.stops.length < 2) return { legs: [], error: null };
+    try {
+      const { getDistanceMatrix } = await import("./providers/osrm.server");
+      const matrix = await getDistanceMatrix(data.stops);
+      const legs: DayLeg[] = [];
+      data.stops.forEach((from, i) => {
+        data.stops.forEach((to, j) => {
+          if (i === j) return;
+          const leg = matrix[i]?.[j];
+          if (!leg) return;
+          // Same straight-line fallback as distancesFromLodging: a real drive
+          // time with no road distance still beats a blank label.
+          const straightLine = leg.miles == null;
+          legs.push({
+            from_id: from.id,
+            to_id: to.id,
+            miles: leg.miles ?? haversineMiles(from, to),
+            hours: leg.hours,
+            straight_line: straightLine,
+          });
+        });
+      });
+      return { legs, error: null };
+    } catch (err) {
+      console.error("[day-distance-matrix] osrm error:", err);
+      return { legs: [], error: "Couldn't work out driving times for this day just now." };
+    }
+  });

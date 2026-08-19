@@ -38,7 +38,14 @@ import {
   ChevronsRight,
   Undo2,
 } from "lucide-react";
-import { committedItems, formatClockUTC } from "@/lib/workspace-store";
+import {
+  formatLeg,
+  useActivityDistances,
+  useDayLegs,
+  type ActivityDistanceResult,
+} from "@/hooks/use-activity-distances";
+import type { ActivityDistance } from "@/lib/travel.functions";
+import { committedItems, coordsOf, formatClockUTC, isBookedLodging } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Item = Tables<"trip_items">;
@@ -58,6 +65,7 @@ export interface ItemMove {
 }
 
 interface Props {
+  tripId: string;
   items: Item[];
   numDays: number;
   startDate: string | null;
@@ -92,6 +100,7 @@ interface Props {
 }
 
 export function ItineraryPanel({
+  tripId,
   items,
   numDays,
   startDate,
@@ -114,6 +123,12 @@ export function ItineraryPanel({
   const allActivities = items
     .filter((i) => i.kind === "activity")
     .sort((a, b) => (a.day_index ?? -1) - (b.day_index ?? -1));
+
+  // "N mi from stay" for the activities panel. Same query the map panel's table
+  // uses — the hook's key is id-sorted, so the differing sort order here does
+  // not split it into a second request.
+  const bookedLodging = items.find(isBookedLodging) ?? null;
+  const fromStay = useActivityDistances(tripId, allActivities, bookedLodging);
 
   const days = numDays > 0 ? numDays : Math.max(1, ...scheduled.map((i) => (i.day_index ?? 0) + 1));
 
@@ -266,6 +281,7 @@ export function ItineraryPanel({
           <div className="flex items-start gap-4">
             <ActivitiesDragPanel
               activities={allActivities}
+              fromStay={fromStay}
               open={activitiesOpen}
               onToggle={() => setActivitiesOpen((o) => !o)}
             />
@@ -360,21 +376,13 @@ export function ItineraryPanel({
                       </p>
                     )}
 
-                    <SortableContext
-                      items={dayItems.map((i) => i.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="space-y-2">
-                        {dayItems.map((it) => (
-                          <SortableRow
-                            key={it.id}
-                            item={it}
-                            onRemove={onRemove}
-                            onPinTime={onPinTime}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
+                    <DayTimeline
+                      tripId={tripId}
+                      dayItems={dayItems}
+                      dragging={dragging != null}
+                      onRemove={onRemove}
+                      onPinTime={onPinTime}
+                    />
                   </DayColumn>
                 );
               })}
@@ -395,10 +403,12 @@ export function ItineraryPanel({
 
 function ActivitiesDragPanel({
   activities,
+  fromStay,
   open,
   onToggle,
 }: {
   activities: Item[];
+  fromStay: ActivityDistanceResult;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -443,18 +453,21 @@ function ActivitiesDragPanel({
           <p className="py-4 text-center text-xs text-muted-foreground">No activities yet.</p>
         )}
         {activities.map((a) => (
-          <ActivityListRow key={a.id} item={a} />
+          <ActivityListRow key={a.id} item={a} fromStay={fromStay.byId.get(a.id) ?? null} />
         ))}
       </div>
     </div>
   );
 }
 
-function ActivityListRow({ item }: { item: Item }) {
+function ActivityListRow({ item, fromStay }: { item: Item; fromStay: ActivityDistance | null }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${LIST_ID_PREFIX}${item.id}`,
   });
   const Icon = ICONS[item.kind as keyof typeof ICONS] ?? Coffee;
+  // Distance from the booked stay — NOT this activity's leg in any day's
+  // sequence. The two are different measurements; see use-activity-distances.
+  const distance = fromStay ? formatLeg(fromStay.miles, fromStay.hours) : null;
   return (
     <div
       ref={setNodeRef}
@@ -462,20 +475,35 @@ function ActivityListRow({ item }: { item: Item }) {
       {...listeners}
       style={{ transform: transform ? CSS.Translate.toString(transform) : undefined }}
       data-testid="activities-panel-row"
-      className={`flex cursor-grab items-center gap-2 rounded-lg border border-border bg-background p-2 text-sm touch-none active:cursor-grabbing ${
+      className={`cursor-grab rounded-lg border border-border bg-background p-2 text-sm touch-none active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
       }`}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
-      <span className="flex-1 truncate">{item.title}</span>
-      {item.day_index != null ? (
-        <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-          Day {item.day_index + 1}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-          Unscheduled
-        </span>
+      <div className="flex items-center gap-2">
+        <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="flex-1 truncate">{item.title}</span>
+        {item.day_index != null ? (
+          <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+            Day {item.day_index + 1}
+          </span>
+        ) : (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            Unscheduled
+          </span>
+        )}
+      </div>
+      {/* Omitted entirely with no stay booked, no coordinates, or still
+          loading — the panel is narrow and every row is a drag target, so a
+          placeholder dash would cost height for nothing. */}
+      {distance && (
+        <p
+          className="mt-1 flex items-center gap-1 pl-[1.375rem] text-[10px] text-muted-foreground"
+          data-testid="activity-from-stay"
+        >
+          <Car className="h-2.5 w-2.5 shrink-0" />
+          {distance} from stay
+          {fromStay?.straight_line ? "*" : ""}
+        </p>
       )}
     </div>
   );
@@ -542,30 +570,174 @@ function DayColumn({ dayIdx, children }: { dayIdx: number; children: React.React
   );
 }
 
+/** Horizontal offset of the rail from the column's left edge. */
+const RAIL_X = "0.5rem";
+
+/**
+ * A segment of the spine. Drawn per row rather than as one absolutely
+ * positioned line spanning the whole timeline: the spine has to start at the
+ * first node's centre and end at the last node's centre, and a single line can
+ * only guess where those land once row heights vary (a pinned time chip, a
+ * wrapped title). Segments are exact at any height.
+ *
+ * It also handles dragging for free — leg rows unmount mid-drag, so the
+ * remaining row segments become adjacent and the spine stays continuous.
+ */
+function RailSegment({ from = "0", to = "0" }: { from?: string; to?: string }) {
+  return (
+    <span
+      aria-hidden
+      className="absolute w-0.5 -translate-x-1/2 bg-muted-foreground/25"
+      style={{ left: RAIL_X, top: from, bottom: to }}
+    />
+  );
+}
+
+/**
+ * The day's stops as a vertical timeline: a spine down the left, a node per
+ * stop, and the driving leg between each consecutive pair sitting on the rail
+ * *between* the two cards it connects.
+ *
+ * Putting the number between the cards is the point — a distance rendered
+ * inside a card reads as a property of that stop, when it actually describes
+ * the trip from the previous one.
+ *
+ * A leg is only drawn when BOTH ends have coordinates. A stop without them
+ * keeps its node (hollow) and the spine runs past it unbroken, but its two
+ * adjacent gaps read "no location" rather than bridging a number across it —
+ * a bridged figure would sit next to a stop it never measured from.
+ */
+function DayTimeline({
+  tripId,
+  dayItems,
+  dragging,
+  onRemove,
+  onPinTime,
+}: {
+  tripId: string;
+  dayItems: Item[];
+  dragging: boolean;
+  onRemove: (item: Item) => void;
+  onPinTime: (item: Item, hhmm: string | null) => void;
+}) {
+  const legs = useDayLegs(tripId, dayItems);
+  if (dayItems.length === 0) return null;
+
+  return (
+    <SortableContext items={dayItems.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+      <div className="relative" data-testid="day-timeline">
+        {dayItems.map((it, idx) => {
+          const next = dayItems[idx + 1];
+          const leg = next ? legs.legBetween(it.id, next.id) : null;
+          const bothLocated =
+            next != null && coordsOf(it.details) != null && coordsOf(next.details) != null;
+          return (
+            <div key={it.id}>
+              <SortableRow
+                item={it}
+                located={coordsOf(it.details) != null}
+                isFirst={idx === 0}
+                isLast={idx === dayItems.length - 1}
+                onRemove={onRemove}
+                onPinTime={onPinTime}
+              />
+              {/* Legs are plain, non-sortable rows interleaved between the
+                  sortable ones, so dnd-kit's registry is untouched. They're
+                  hidden mid-drag: cards translate but these don't, so leaving
+                  them up would point numbers at the wrong pairs. */}
+              {next && !dragging && (
+                <div
+                  className="relative flex items-center gap-1.5 py-1.5 text-xs text-muted-foreground"
+                  style={{ paddingLeft: `calc(${RAIL_X} + 1.25rem)` }}
+                  data-testid="day-leg"
+                >
+                  <RailSegment />
+                  {bothLocated && leg ? (
+                    <>
+                      <Car className="h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        {formatLeg(leg.miles, leg.hours)}
+                        {leg.straight_line ? "*" : ""}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="italic opacity-70" data-testid="day-leg-unknown">
+                      no location
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </SortableContext>
+  );
+}
+
+/**
+ * The rail's node vocabulary, in decreasing prominence:
+ *
+ * - **solid, largest** — the booked stay, which anchors the day it sits on
+ * - **hollow, grey ring** — an ordinary stop
+ * - **hollow, faded** — a stop with no coordinates
+ *
+ * The faded step exists because hollow-grey is the *ordinary* stop here, so
+ * "we don't know where this is" needed its own treatment rather than reusing
+ * it. The node is only a hint; the explicit signal is the "no location" text
+ * on both gaps beside it.
+ */
 function SortableRow({
   item,
+  located,
+  isFirst,
+  isLast,
   onRemove,
   onPinTime,
 }: {
   item: Item;
+  located: boolean;
+  isFirst: boolean;
+  isLast: boolean;
   onRemove: (item: Item) => void;
   onPinTime: (item: Item, hhmm: string | null) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
+  const isStay = isBookedLodging(item);
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={isDragging ? "opacity-40" : undefined}
+      className={`relative ${isDragging ? "opacity-40" : ""}`}
     >
-      <ItemRow
-        item={item}
-        onRemove={onRemove}
-        onPinTime={onPinTime}
-        handleProps={{ ...attributes, ...listeners }}
+      {/* Spine halves, omitted at the ends so the rail begins and finishes on
+          a node rather than overshooting the list. */}
+      {!isFirst && <RailSegment to="50%" />}
+      {!isLast && <RailSegment from="50%" />}
+      <span
+        aria-hidden
+        className={`absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+          isStay
+            ? "h-3.5 w-3.5 border-2 border-primary bg-primary"
+            : // The ring is deliberately darker than --border (which is nearly
+              // white): at that lightness the hollow node barely read at all,
+              // and the faded variant below vanished outright.
+              `h-3 w-3 border-2 border-muted-foreground/45 bg-card ${located ? "" : "opacity-40"}`
+        }`}
+        style={{ left: RAIL_X }}
+        data-testid={isStay ? "rail-node-stay" : located ? "rail-node" : "rail-node-unlocated"}
       />
+      <div style={{ paddingLeft: `calc(${RAIL_X} + 1.25rem)` }}>
+        <ItemRow
+          item={item}
+          onRemove={onRemove}
+          onPinTime={onPinTime}
+          handleProps={{ ...attributes, ...listeners }}
+        />
+      </div>
+      {isFirst && isStay && <span className="sr-only">Start of the day</span>}
     </div>
   );
 }

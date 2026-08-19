@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
 import { Bed, Car, Info, MapPin } from "lucide-react";
-import { distancesFromLodging } from "@/lib/travel.functions";
+import { useActivityDistances } from "@/hooks/use-activity-distances";
 import { coordsOf, formatHours, formatMoney } from "@/lib/workspace-store";
 import { DestinationMap, type MapCardPin } from "./destination-map";
 import type { Tables } from "@/integrations/supabase/types";
@@ -29,8 +27,6 @@ const LODGING_PIN_ID = "lodging";
  * AI-written notes; see context.md §3 (v0.9.0) for why that went.
  */
 export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
-  const distancesFn = useServerFn(distancesFromLodging);
-
   const located = activities
     .map((a) => ({ item: a, coords: coordsOf(a.details) }))
     .filter((a): a is { item: Item; coords: { lat: number; lng: number } } => a.coords != null);
@@ -38,27 +34,10 @@ export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
 
   const lodgingCoords = lodging ? coordsOf(lodging.details) : null;
 
-  // Keyed on what actually changes the answer — which activities exist, where
-  // they are, and where the stay is — so adding or removing an activity
-  // refetches while re-renders and day-tab switches replay from cache.
-  const signature = located.map((a) => `${a.item.id}:${a.coords.lat},${a.coords.lng}`).join("|");
-  const originKey = lodgingCoords ? `${lodgingCoords.lat},${lodgingCoords.lng}` : "none";
-
-  const q = useQuery({
-    queryKey: ["activity-distances", tripId, originKey, signature],
-    queryFn: () =>
-      distancesFn({
-        data: {
-          origin: lodgingCoords!,
-          targets: located.map((a) => ({ id: a.item.id, lat: a.coords.lat, lng: a.coords.lng })),
-        },
-      }),
-    enabled: lodgingCoords != null && located.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
-
-  const distanceById = new Map((q.data?.distances ?? []).map((d) => [d.id, d]));
+  // Shared with the Activities panel's "from stay" line — same query key, so
+  // both surfaces render off ONE request rather than each fetching its own.
+  const q = useActivityDistances(tripId, activities, lodging);
+  const distanceById = q.byId;
 
   const pins: MapCardPin[] = [
     ...(lodgingCoords
@@ -212,9 +191,9 @@ export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
         </div>
       )}
 
-      {q.data?.error && (
+      {q.error && (
         <p className="text-xs text-muted-foreground" data-testid="distance-error">
-          {q.data.error}
+          {q.error}
         </p>
       )}
 

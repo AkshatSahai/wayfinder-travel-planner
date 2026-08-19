@@ -39,6 +39,39 @@ human run-through.)
       it from the Activities tab, which routes through `enrichActivityLocation`. Confirm that
       works. Updated 2026-08-19.
 
+### v0.10.0 (itinerary distances + timeline rail) — VERIFIED 2026-08-19
+
+Headless Edge via `puppeteer-core` against the live Supabase project, on a seeded Chicago trip:
+day 0 = booked stay → Shedd → Field, day 1 = Zoo → an unlocated block → Powers, plus a second
+trip with no lodging at all.
+
+- [x] **The two distance types are genuinely different calculations** — **PASS.** Shedd, the first
+      stop after the stay, showed `1.9 mi · 5 min` as both its leg and its from-stay figure (they
+      must agree there). Field showed a `0.5 mi` leg against a `1.7 mi` from-stay. After dragging
+      Field to first its leg became `1.7 mi`, matching its from-stay exactly — order-dependence
+      demonstrated in both directions.
+- [x] **Reorder recalculates every leg** — **PASS.** Order changed and legs updated
+      (`1.7 mi` stay→Field, `1.0 mi` Field→Shedd), with `dayDistanceMatrix` staying at **1 call**
+      — no refetch, which is the entire point of the matrix over per-order routing.
+- [x] **No booked lodging** — **PASS.** Chain started at the first activity, zero "stay" nodes,
+      and the panel's from-stay lines were absent rather than dashes.
+- [x] **A stop with no coordinates** — **PASS.** `Zoo → [no location] → Relax, no plans (hollow
+      node) → [no location] → Powers`. Rail unbroken, no bridged mileage anywhere.
+- [x] **One request, not two** — **PASS.** Exactly one `distancesFromLodging` call with both the
+      activities panel and the map table mounted, confirming the id-sorted shared query key.
+- [x] **Still no AI calls** — **PASS.** Observed handlers: `getTrip`, `dayDistanceMatrix`,
+      `distancesFromLodging`, `updateTripItems`. No AI-backed handler, no page errors.
+- [x] **Timeline rail against the mockup** — **PASS.** The "option C" mockup arrived after the
+      first build and was matched against it: solid larger node for the stay, hollow grey rings
+      for ordinary stops, spine running node-to-node, leg text with car icon between the cards.
+      Uses the app's green `--primary` rather than the mockup's navy. Added 2026-08-19.
+- [x] **Rail appearance in a real browser** — **PASS, by screenshot.** The rail is pure CSS with
+      no Maps dependency, so unlike the map pins it could be rendered and looked at locally.
+      **This caught a real defect the DOM could not:** with the ring at `--border` (near-white)
+      the hollow node barely registered and the 40%-opacity "no location" variant vanished
+      entirely — every testid and computed style was correct while the thing was unreadable.
+      Fixed by darkening the ring to `border-muted-foreground/45`. Added 2026-08-19.
+
 ### v0.9.0 (static activity map) — VERIFIED 2026-08-19
 
 Headless Edge via `puppeteer-core` against the live Supabase project, on a seeded 4-day Chicago

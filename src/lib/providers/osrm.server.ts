@@ -39,55 +39,6 @@ export interface DrivingRoute {
   stop_count: number;
 }
 
-export interface CoordRoute {
-  total_miles: number;
-  total_hours: number;
-  /** Duration of each hop, in the order the stops were given. */
-  leg_hours: number[];
-  /** Road geometry as [lat, lng] pairs, for drawing the route on a map. */
-  path: { lat: number; lng: number }[];
-}
-
-/**
- * Route a sequence of already-known coordinates — for a single day's stops.
- *
- * Deliberately separate from `getDrivingRoute`, which takes place-name strings
- * and geocodes each one through Nominatim. Nominatim asks for ~1 request/second,
- * so routing a day of six stops by name would be slow and rate-limited. Activity
- * coordinates are already stored in `details.coords`, so use them.
- *
- * Requests full geometry so the real road path can be drawn rather than
- * straight lines between pins.
- */
-export async function getRouteForCoords(
-  points: { lat: number; lng: number }[],
-): Promise<CoordRoute | null> {
-  if (points.length < 2) return null;
-  const path = points.map((p) => `${p.lng},${p.lat}`).join(";");
-  const url = `${OSRM_URL}/${path}?overview=full&geometries=geojson`;
-  const res = await withTimeout(fetch(url, { headers: { "User-Agent": USER_AGENT } }));
-  if (!res.ok) throw new Error(`osrm route failed: ${res.status}`);
-  const json = (await res.json()) as {
-    code: string;
-    routes?: {
-      distance: number;
-      duration: number;
-      legs?: { duration: number }[];
-      geometry?: { coordinates: [number, number][] };
-    }[];
-  };
-  const route = json.routes?.[0];
-  if (json.code !== "Ok" || !route) return null;
-
-  return {
-    total_miles: route.distance / 1609.34,
-    total_hours: route.duration / 3600,
-    leg_hours: (route.legs ?? []).map((l) => l.duration / 3600),
-    // OSRM geojson is [lng, lat]; Google wants {lat, lng}.
-    path: (route.geometry?.coordinates ?? []).map(([lng, lat]) => ({ lat, lng })),
-  };
-}
-
 export interface DistanceLeg {
   /**
    * Road miles. Null when this OSRM build didn't return the `distance`
@@ -101,7 +52,7 @@ export interface DistanceLeg {
 /**
  * Driving distance and time from ONE origin to many targets.
  *
- * Uses OSRM's `table` service rather than N calls to `getRouteForCoords`:
+ * Uses OSRM's `table` service rather than one route request per target:
  * `sources=0` asks for just the origin's row of the matrix, so a trip with
  * twenty activities costs one request instead of twenty. The public demo
  * server is rate-limited and this runs whenever the activity set changes.
@@ -149,6 +100,61 @@ export async function getDistancesFrom(
     });
   }
   return out;
+}
+
+/** Ceiling on stops per matrix request. See getDistanceMatrix. */
+export const MATRIX_MAX_POINTS = 40;
+
+/**
+ * Full pairwise driving matrix for a set of points — `out[i][j]` is the leg
+ * from point i to point j, or null if that pair couldn't be routed.
+ *
+ * Deliberately a matrix rather than a route through the points in order.
+ * The caller (a day's stop list) reorders constantly via drag-and-drop, and
+ * legs are sequence-dependent — routing per ordering would mean a network
+ * round trip on every drop. A matrix is keyed on the *set* of stops instead,
+ * so reordering is a pure client-side lookup and only adding or removing a
+ * stop costs a request.
+ *
+ * This is also why there is no `getRouteForCoords` here any more: it existed
+ * for the per-day route map removed in v0.9.0, and reaching for it to build
+ * legs would quietly undo the above. See context.md §3.
+ *
+ * Unlike `getDistancesFrom` this does NOT chunk. Chunking a matrix would need
+ * O(n²/CHUNK²) requests to stay correct across chunk boundaries, and a single
+ * day never has that many stops — so it throws past the ceiling rather than
+ * silently returning a truncated matrix the caller would read as real.
+ */
+export async function getDistanceMatrix(
+  points: { lat: number; lng: number }[],
+): Promise<(DistanceLeg | null)[][]> {
+  if (points.length < 2) return [];
+  if (points.length > MATRIX_MAX_POINTS) {
+    throw new Error(`osrm matrix: ${points.length} points exceeds ${MATRIX_MAX_POINTS}`);
+  }
+
+  const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
+  // No `sources` parameter: that's what makes this the full matrix rather
+  // than the single row getDistancesFrom asks for.
+  const url = `${OSRM_TABLE_URL}/${coords}?annotations=duration,distance`;
+  const res = await withTimeout(fetch(url, { headers: { "User-Agent": USER_AGENT } }));
+  if (!res.ok) throw new Error(`osrm table failed: ${res.status}`);
+  const json = (await res.json()) as {
+    code: string;
+    durations?: (number | null)[][];
+    distances?: (number | null)[][];
+  };
+  if (json.code !== "Ok") throw new Error(`osrm table failed: ${json.code}`);
+
+  return points.map((_from, i) =>
+    points.map((_to, j) => {
+      if (i === j) return null;
+      const seconds = json.durations?.[i]?.[j];
+      if (typeof seconds !== "number") return null;
+      const meters = json.distances?.[i]?.[j];
+      return { miles: typeof meters === "number" ? meters / 1609.34 : null, hours: seconds / 3600 };
+    }),
+  );
 }
 
 // Route origin → (waypoints…) → destination as one chained OSRM path.

@@ -1,5 +1,42 @@
 # Wayfinder Changelog
 
+## v0.10.0 — 2026-08-19
+
+### Overview
+
+Driving distances now show up in the two places you're actually looking while you plan a day —
+and they answer two different questions.
+
+In the **Activities panel** on the left, every activity carries how far it is from the place
+you're staying. That's the question you're asking while you decide what to drag onto which day:
+is this thing near the hotel or across town?
+
+In the **day schedule** in the middle, you get the drive between each stop and the next one, in
+the order you've actually arranged them. That's a different question — not "how far from the
+hotel" but "how much driving does this day involve, in this order?" Rearrange the day and the
+numbers follow.
+
+### Updates
+
+#### Itinerary
+
+**Distance from your stay, on every activity**
+
+- Each activity in the left-hand panel now shows something like "1.9 mi · 5 min from stay",
+  whether or not it's been scheduled onto a day yet.
+- If you haven't booked a stay, the line is simply absent rather than showing empty placeholders.
+
+**Drive times between stops, along the day's route**
+
+- The day schedule is now a timeline. Each stop sits on a rail, and the drive from one stop to
+  the next is shown on the rail between them — so it's clear the number describes the trip
+  between those two specific stops, not a measurement from somewhere else.
+- Your booked stay anchors the day it's on, marked with a filled dot as the starting point.
+- Reorder the day by dragging and every leg updates to the new sequence immediately.
+- A stop with no saved location (an unlocated activity, or a plan like "Relax, no plans") keeps
+  its place on the rail with an open dot; the drives on either side of it read "no location"
+  rather than quietly measuring around it and showing you a number for a trip you're not making.
+
 ## v0.9.0 — 2026-08-19
 
 ### Overview

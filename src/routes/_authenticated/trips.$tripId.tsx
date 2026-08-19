@@ -416,6 +416,7 @@ function WorkspacePage() {
 
           {tab === "itinerary" && (
             <ItineraryPanel
+              tripId={tripId}
               items={items}
               numDays={numDays}
               startDate={trip.start_date}

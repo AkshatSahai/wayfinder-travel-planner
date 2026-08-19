@@ -562,6 +562,86 @@ pill it used to render in was shared with the A4 advisor, and that pill went wit
   is the v0.7.2 geocoding chokepoint every activity insert runs through, and `searchTextCategory`
   backs the Activities browse dialog. Deleting either breaks activity coordinates with no error.
 
+### Two different distance measurements, and why they must not be merged (v0.10.0)
+
+The Itinerary tab shows driving numbers in two places. They look alike and are computed from
+completely different things — conflating them is the obvious mistake here, so both hooks live in
+`src/hooks/use-activity-distances.ts` with the distinction documented at the top of the file.
+
+| | Surface | Measures | Order-dependent? | Server fn |
+|---|---|---|---|---|
+| **From-stay** | Activities panel rows | booked lodging → activity | No | `distancesFromLodging` |
+| **Leg** | Day timeline, between cards | stop → next stop in the day's order | **Yes** | `dayDistanceMatrix` |
+
+They agree **only** for the first stop after the lodging on its day — verified live: with the day
+ordered stay → Shedd → Field, Shedd's leg and its from-stay figure were both `1.9 mi · 5 min`,
+while Field's leg (`0.5 mi`) and its from-stay (`1.7 mi`) differed. Dragging Field to first made
+its leg become `1.7 mi`, matching its from-stay exactly, because it was then the first stop. If
+those two ever agree for a non-first stop, one of them is reading the wrong source.
+
+⚠️ **The shared query key must be sorted by id.** Both `ActivityMapPanel` and `ItineraryPanel`
+call `useActivityDistances` with the same activity set in *different orders* — the route passes an
+unsorted list to the map panel while `ItineraryPanel` sorts its copy by `day_index`. A key built
+from array order produces two different keys for identical data and fires the same request twice.
+`signatureOf()` sorts before joining; verified as exactly **one** `distancesFromLodging` call with
+both surfaces mounted.
+
+### Day legs use a distance MATRIX, not a route per ordering (v0.10.0)
+
+`getDistanceMatrix` (`providers/osrm.server.ts`) asks OSRM's `table` service for the **full N×N**
+matrix of a day's stops — the same endpoint `getDistancesFrom` uses, minus the `sources=0`
+parameter that limits it to one row.
+
+**Why a matrix and not a route through the stops in order:** legs are sequence-dependent and the
+sequence changes on every drag. Routing per ordering means a network round trip on every drop.
+Keying the matrix on the *set* of stops instead makes reordering a pure client-side lookup —
+verified live: a drag-reorder changed every leg while `dayDistanceMatrix` stayed at **1 call**.
+Only adding or removing a stop changes the key.
+
+⚠️ **`getRouteForCoords` was deleted in v0.10.0**, not merely orphaned. It had been dead since
+v0.9.0 removed `dayPlan`, and it is exactly what someone would reach for to build legs — leaving
+it in place invited quietly undoing the above. Don't reintroduce it for this purpose.
+
+⚠️ **`getDistanceMatrix` deliberately does not chunk**, unlike `getDistancesFrom`. Chunking a
+matrix correctly needs O(n²/CHUNK²) requests to cover cross-chunk pairs; a single day never has
+that many stops. It throws past `MATRIX_MAX_POINTS` (40) rather than returning a truncated matrix
+the caller would read as complete.
+
+**No-coordinate stops break the numbers, not the rail.** A leg renders only when *both* ends have
+coordinates. A stop without them keeps its node (hollow) and the spine runs past it unbroken, but
+both adjacent gaps read "no location". The rejected alternative was bridging — drawing a real
+A→C leg across the unlocated B — which puts a mileage figure next to a stop it never measured
+from. Verified: `Zoo → [no location] → Relax, no plans (hollow) → [no location] → Powers`.
+
+**The rail's node vocabulary** (built to the "option C" mockup, confirmed by screenshot):
+
+| Node | Meaning |
+|---|---|
+| Solid `primary`, 14px | the booked stay — anchors the day it sits on |
+| Hollow, grey ring, 12px | an ordinary stop |
+| Hollow, grey ring, **40% opacity** | a stop with no coordinates |
+
+⚠️ **The hollow ring is `border-muted-foreground/45`, deliberately NOT `border-border`.** `--border`
+is `oklch(0.9 …)` — nearly white — and at that lightness the hollow node barely registered and the
+faded variant disappeared outright. This was invisible in the DOM (the testids and computed styles
+were all correct) and only showed up in a screenshot. If you restyle these, look at a render.
+
+The mockup's node is navy; this uses the app's green `--primary` instead, since every other accent
+in the app is green and the blue was mockup styling rather than a brand decision.
+
+**The spine is drawn as per-row segments, not one absolute line.** It has to start at the first
+node's centre and end at the last node's centre, and a single line with a fixed inset can only
+guess where those land once row heights vary (a pinned time chip, a wrapped title). Each row draws
+a half-segment above and below its node — skipped at the two ends — and each leg row draws a full
+one. This also handles dragging for free: leg rows unmount mid-drag, so the remaining row segments
+become adjacent and the spine stays continuous with no special case.
+
+**Timeline and dnd-kit.** Leg rows are plain, non-sortable divs interleaved between `SortableRow`s
+inside the existing `SortableContext`; the sortable ids stay exactly `dayItems.map(i => i.id)`, so
+`handleDragEnd` and the `day-N`/`daytab-N`/`list-` prefix resolution are untouched. Legs are
+**hidden while a drag is in flight** (`dragging` state) — cards translate during a drag but the
+interleaved legs don't, so leaving them visible points numbers at the wrong pairs mid-gesture.
+
 ### Distances come from one OSRM `table` call, not N route calls (v0.9.0)
 
 `getDistancesFrom()` (`providers/osrm.server.ts`) uses OSRM's **table** service with `sources=0` —
@@ -794,6 +874,29 @@ not a code change to the existing trip/item server fns.
 ---
 
 ## 4. What shipped recently
+
+### v0.10.0 (itinerary distances: from-stay + leg-by-leg timeline) — 2026-08-19
+
+**Verified end-to-end in a live browser on 2026-08-19** (headless Edge + puppeteer-core, live
+Supabase project, seeded Chicago trip). See §3's "Two different distance measurements" and "Day
+legs use a distance MATRIX" for the design. No schema or migration change — purely code.
+
+Adds the two distance surfaces described in §3, plus a vertical timeline treatment for the day
+schedule (spine, a node per stop, the stay's node filled, legs on the rail between cards).
+`getRouteForCoords` deleted; `getDistanceMatrix` + the `dayDistanceMatrix` server fn added;
+`useActivityDistances`/`useDayLegs` extracted into `src/hooks/use-activity-distances.ts` so the
+map panel and the activities panel share one query.
+
+All six checks passed: the two numbers proved genuinely distinct (and converged exactly when the
+reordered day made a different activity first); a drag-reorder recalculated every leg with
+**zero** additional `dayDistanceMatrix` requests; the no-lodging trip degraded cleanly; an
+unlocated block produced "no location" on both sides without a bridged figure; exactly one
+`distancesFromLodging` call served both surfaces; and no AI-backed handler fired.
+
+⚠️ **Whole-mile rounding was a real defect caught in verification, not a nitpick.** The first
+implementation rounded to integers, which turned a genuine 0.5 mi hop into **"0 mi"** — reading
+as a failure rather than a short walk — and flattened 1.7 and 1.9 into the same "2 mi", hiding
+the very difference the feature exists to show. `formatLeg` now uses one decimal under 10 miles.
 
 ### v0.9.0 (Itinerary tab: static activity map, no AI) — 2026-08-19
 
@@ -1164,16 +1267,26 @@ Production has these keys, so the quickest check is the live site.
   them without a forced major bump. Left alone deliberately rather than folded into an unrelated
   change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
   surfaces as a build failure, not a test failure.
-- ⚠️ **Two `claude-*` verification users from the v0.9.0 pass are still in Supabase auth**
-  (2026-08-19). Their trips and `trip_items` were deleted via the owner's own JWT and confirmed
-  gone (`trips` and `trip_items` both return `[]`), so **no orphan data remains** — only the auth
-  rows. They could not be removed because `SUPABASE_SERVICE_ROLE_KEY` was not available on this
-  machine (no `.env`; only the two *public* Supabase values are recoverable from the deployed
-  bundle). One is `claude-v090-verify-1787117562267@example.com`; the other is an earlier
-  `claude-v090-verify-*@example.com` orphaned by a failed first seed (its email was not captured
-  before the script died — the seeder now writes credentials to disk immediately after signup so
-  that cannot recur). Delete both via `auth/v1/admin/users` with the service-role key, the same
-  way the previous 10 were cleared.
+- ⚠️ **Four `claude-*` verification users from the v0.9.0 and v0.10.0 passes are still in Supabase
+  auth** (2026-08-19). Every trip and `trip_items` row they owned was deleted via the owner's own
+  JWT and confirmed gone (`trips` and `trip_items` both return `[]`), so **no orphan data
+  remains** — only the auth rows. They can't be removed here because `SUPABASE_SERVICE_ROLE_KEY`
+  isn't available on this machine (no `.env`; only the two *public* Supabase values are
+  recoverable from the deployed bundle). They are
+  `claude-v090-verify-1787117562267@example.com`,
+  `claude-v090-verify-1787120412192@example.com`,
+  `claude-v090-verify-1787121183193@example.com`, and one earlier
+  `claude-v090-verify-*@example.com` whose email wasn't captured before a failed first seed killed
+  the script. Delete all four via `auth/v1/admin/users` with the service-role key, the same way
+  the previous 10 were cleared.
+
+  **Why this keeps growing, and how to stop it.** The seeder writes credentials to
+  `scratchpad/creds.json` immediately after signup (not doing so is what lost the first email),
+  and reuses that account when the file exists. But **deleting `creds.json` during cleanup forces
+  the next run to sign up a fresh user** — that alone produced two of the four. `creds.json` holds
+  only a throwaway account's password, so leave it in place between passes; it lives in a
+  session-scoped temp directory and disappears on its own. The durable fix is the service-role
+  key, which would let cleanup delete the account outright.
 - ~~Leftover `claude-*` verification users in Supabase auth.~~ **Done 2026-08-17** — all 10
   (3 from v0.4.0, 7 from v0.5.0) deleted via `auth/v1/admin/users` with the service-role key, which
   is now in `.env`. Zero `claude-*` accounts remain. Future test users can be scripted away the
