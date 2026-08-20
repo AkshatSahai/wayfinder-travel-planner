@@ -37,8 +37,8 @@ import { TripMetaBar } from "@/components/shell/trip-meta-bar";
 
 import { TripDetailsPanel } from "@/components/travel/trip-details-panel";
 import { LodgingPanel } from "@/components/travel/lodging-panel";
-import { TransportPanel } from "@/components/travel/transport-panel";
 import { ActivitiesPanel } from "@/components/travel/activities-panel";
+import { ActivityDetailDialog } from "@/components/travel/activity-detail-dialog";
 import { ItineraryPanel, type ItemMove } from "@/components/travel/itinerary-panel";
 import { ActivityMapPanel } from "@/components/travel/activity-map-panel";
 import { MissingFieldsBanner } from "@/components/travel/missing-fields-banner";
@@ -50,7 +50,7 @@ type Item = Tables<"trip_items">;
 
 const authRoute = getRouteApi("/_authenticated");
 
-const TABS = ["details", "lodging", "transport", "activities", "itinerary"] as const;
+const TABS = ["details", "lodging", "activities", "itinerary"] as const;
 
 export const Route = createFileRoute("/_authenticated/trips/$tripId")({
   // `.catch` keeps links to the retired ?tab=destination working — unknown
@@ -74,6 +74,7 @@ function WorkspacePage() {
   const { user } = authRoute.useRouteContext();
   const [shareOpen, setShareOpen] = useState(false);
   const [feedOpen, setFeedOpen] = useState(false);
+  const [openActivityId, setOpenActivityId] = useState<string | null>(null);
 
   const qc = useQueryClient();
   const getFn = useServerFn(getTrip);
@@ -272,6 +273,13 @@ function WorkspacePage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  const editItemMut = useMutation({
+    mutationFn: (payload: { id: string; patch: Record<string, unknown> }) =>
+      updateItemFn({ data: { id: payload.id, ...payload.patch } }),
+    onSuccess: invalidate,
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   if (isLoading) return <div className="p-10 text-muted-foreground">Loading trip…</div>;
   if (error || !data?.trip) throw notFound();
 
@@ -386,31 +394,21 @@ function WorkspacePage() {
             />
           )}
 
-          {tab === "transport" && (
-            <TransportPanel
-              origin={origin}
-              destination={destination}
-              mode={parsed.travel_mode ?? null}
-              partySize={trip.party_size ?? 2}
-              startDate={trip.start_date}
-              endDate={trip.end_date}
-              waypoints={waypoints}
-              onAdd={(item) => handleAdd(item)}
-            />
-          )}
-
           {tab === "activities" && (
             <ActivitiesPanel
+              tripId={tripId}
               destination={destination}
               interests={interests}
               startDate={trip.start_date}
               endDate={trip.end_date}
               partySize={trip.party_size ?? 2}
               activities={allActivities}
+              lodging={items.find(isBookedLodging) ?? null}
               unscheduledCount={staged.length}
               autoBrowse={!isManualTrip}
               onAdd={(item) => handleAdd(item)}
               onRemove={(id) => removeMut.mutate(id)}
+              onOpenActivity={(id) => setOpenActivityId(id)}
             />
           )}
 
@@ -442,10 +440,20 @@ function WorkspacePage() {
                   movedTitle: moved ? (items.find((i) => i.id === moved.id)?.title ?? null) : null,
                 })
               }
+              onOpenActivity={(id) => setOpenActivityId(id)}
             />
           )}
         </div>
       </main>
+
+      <ActivityDetailDialog
+        item={items.find((i) => i.id === openActivityId) ?? null}
+        destination={destination}
+        startDate={trip.start_date}
+        endDate={trip.end_date}
+        onClose={() => setOpenActivityId(null)}
+        onSave={(id, patch) => editItemMut.mutate({ id, patch })}
+      />
     </div>
   );
 }

@@ -1,11 +1,6 @@
 import { KeyRound, ExternalLink } from "lucide-react";
 
 const KEY_INFO: Record<string, { provider: string; signupUrl: string; signupLabel: string }> = {
-  DUFFEL_API_KEY: {
-    provider: "Duffel (live flight offers)",
-    signupUrl: "https://duffel.com",
-    signupLabel: "duffel.com — free test key",
-  },
   GOOGLE_API_KEY: {
     provider: "Google Places (restaurants, attractions, photos)",
     signupUrl: "https://console.cloud.google.com/apis/library/places.googleapis.com",
@@ -20,11 +15,6 @@ const KEY_INFO: Record<string, { provider: string; signupUrl: string; signupLabe
     provider: "TravelPayouts (live hotel search)",
     signupUrl: "https://www.travelpayouts.com",
     signupLabel: "travelpayouts.com — free partner token",
-  },
-  EIA_API_KEY: {
-    provider: "EIA (live regional gas prices)",
-    signupUrl: "https://www.eia.gov/opendata/",
-    signupLabel: "eia.gov/opendata — free key",
   },
   VITE_GOOGLE_MAPS_KEY: {
     provider: "Google Maps (map panel, routes, waypoints)",

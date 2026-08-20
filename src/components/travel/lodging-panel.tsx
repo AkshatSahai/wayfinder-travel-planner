@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { searchLodging } from "@/lib/trip-ai.functions";
 import { geocodeLabels } from "@/lib/places.functions";
@@ -16,7 +16,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, ExternalLink, Star, Home, Hotel, Check, ArrowUpDown, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Plus,
+  ExternalLink,
+  Star,
+  Home,
+  Hotel,
+  Check,
+  ArrowUpDown,
+  Trash2,
+  Link as LinkIcon,
+} from "lucide-react";
+import { fetchLinkMetadata } from "@/lib/url-metadata.functions";
 import {
   formatMoney,
   daysBetween,
@@ -106,9 +118,40 @@ export function LodgingPanel({
   const [location, setLocation] = useState("");
   const [url, setUrl] = useState("");
   const [price, setPrice] = useState("");
+  const [image, setImage] = useState<string | null>(null);
+  const [autoFilled, setAutoFilled] = useState<Set<"name" | "location" | "price">>(new Set());
   const [sortKey, setSortKey] = useState<SortKey>("cost");
   const [sortAsc, setSortAsc] = useState(true);
   const [openStayId, setOpenStayId] = useState<string | null>(null);
+
+  const fetchLinkFn = useServerFn(fetchLinkMetadata);
+  const fetchLinkMut = useMutation({
+    mutationFn: () => fetchLinkFn({ data: { url: url.trim() } }),
+    onSuccess: ({ meta, error }) => {
+      if (!meta) {
+        toast.error(error ?? "Couldn't read that link — enter details manually.");
+        return;
+      }
+      const filled = new Set<"name" | "location" | "price">();
+      if (meta.title && !name.trim()) {
+        setName(meta.title);
+        filled.add("name");
+      }
+      if (meta.address && !location.trim()) {
+        setLocation(meta.address);
+        filled.add("location");
+      }
+      if (meta.price_cents != null && !price) {
+        setPrice((meta.price_cents / 100).toString());
+        filled.add("price");
+      }
+      if (meta.image) setImage(meta.image);
+      setAutoFilled(filled);
+      toast.success("Pulled in what we could find — review before adding.");
+    },
+    onError: () => toast.error("Couldn't read that link — enter details manually."),
+  });
+  const urlLooksValid = /^https?:\/\/.+/i.test(url.trim());
 
   // Stays saved before coordinates existed (or whose geocode failed) still need
   // a pin and a distance, so backfill them from their stored location text.
@@ -209,40 +252,82 @@ export function LodgingPanel({
         </p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.2fr_1fr_110px_auto]">
           <div>
-            <Label htmlFor="stay-name">Name</Label>
+            <Label htmlFor="stay-name">
+              Name
+              {autoFilled.has("name") && (
+                <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  auto-filled
+                </span>
+              )}
+            </Label>
             <Input
               id="stay-name"
               placeholder="e.g. Lakeview Cottage"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setAutoFilled((s) => new Set([...s].filter((k) => k !== "name")));
+              }}
             />
           </div>
           <div>
-            <Label htmlFor="stay-location">City / address</Label>
+            <Label htmlFor="stay-location">
+              City / address
+              {autoFilled.has("location") && (
+                <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  auto-filled
+                </span>
+              )}
+            </Label>
             <PlaceAutocomplete
               id="stay-location"
               value={location}
-              onChange={setLocation}
+              onChange={(v) => {
+                setLocation(v);
+                setAutoFilled((s) => new Set([...s].filter((k) => k !== "location")));
+              }}
               placeholder={destination}
             />
           </div>
           <div>
             <Label htmlFor="stay-url">Listing URL (optional)</Label>
-            <Input
-              id="stay-url"
-              placeholder="https://airbnb.com/rooms/…"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="stay-url"
+                placeholder="https://airbnb.com/rooms/…"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                title="Fetch details from this link"
+                disabled={!urlLooksValid || fetchLinkMut.isPending}
+                onClick={() => fetchLinkMut.mutate()}
+              >
+                <LinkIcon className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           <div>
-            <Label htmlFor="stay-price">Total $</Label>
+            <Label htmlFor="stay-price">
+              Total $
+              {autoFilled.has("price") && (
+                <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  auto-filled
+                </span>
+              )}
+            </Label>
             <Input
               id="stay-price"
               type="number"
               placeholder="900"
               value={price}
-              onChange={(e) => setPrice(e.target.value)}
+              onChange={(e) => {
+                setPrice(e.target.value);
+                setAutoFilled((s) => new Set([...s].filter((k) => k !== "price")));
+              }}
             />
           </div>
           <div className="flex items-end">
@@ -258,6 +343,7 @@ export function LodgingPanel({
                     location: location.trim() || destination,
                     source: "manual",
                     nights,
+                    image: image ?? undefined,
                   },
                   source_url: url.trim() || undefined,
                 });
@@ -265,12 +351,15 @@ export function LodgingPanel({
                 setLocation("");
                 setUrl("");
                 setPrice("");
+                setImage(null);
+                setAutoFilled(new Set());
               }}
             >
               <Plus className="mr-1 h-4 w-4" /> Add
             </Button>
           </div>
         </div>
+        {image && <img src={image} alt="" className="mt-3 h-20 w-32 rounded-lg object-cover" />}
       </section>
 
       {/* ---- Comparison table + map ---- */}

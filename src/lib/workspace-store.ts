@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type WorkspaceTab = "details" | "lodging" | "transport" | "activities" | "itinerary";
+export type WorkspaceTab = "details" | "lodging" | "activities" | "itinerary";
 
 interface WorkspaceState {
   tab: WorkspaceTab;
@@ -218,6 +218,14 @@ export function daysUntil(date?: string | null): number | null {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return Math.round((target - today.getTime()) / 86400000);
+}
+
+/** Local-safe: same day arithmetic `daysUntil` uses, but returns a Date for
+ *  day `dayIndex` of a trip starting on `startDate` (0 = start day). */
+export function dateForDayIndex(startDate: string, dayIndex: number): Date {
+  const d = new Date(`${startDate}T00:00:00`);
+  d.setDate(d.getDate() + dayIndex);
+  return d;
 }
 
 export function formatHours(hours: number): string {

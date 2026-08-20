@@ -1,5 +1,106 @@
 # Wayfinder Changelog
 
+## v0.11.0 — 2026-08-20
+
+### Overview
+
+A correctness fix, a removal, and an Activities overhaul.
+
+The itinerary's Day 1 was rendering one calendar day early for anyone in a US timezone — a
+classic date-only-string parsing bug, fixed at its root rather than patched with a display
+offset. The Transport tab (Drive/Fly/Train comparison, Duffel flights, EIA gas prices, manual
+train entry) is gone; it leaned on two third-party integrations for a comparison most travelers
+weren't using, and removing it let the Trip Details dashboard's travel-time estimator go with it.
+Existing trips that already have transport line items keep them — they still count toward budget,
+there's just no UI to add more.
+
+Activities drops its Category field — it was decorative, not something scheduling ever read — and
+gains something travelers actually asked for: how far each activity is from the booked stay,
+sortable nearest-to-farthest, reusing the same distance data the Itinerary tab already has.
+Activities (and now Lodging too) also get a proper edit dialog, and pasting a link pulls in
+meaningfully more — ticket price, reservation requirements, hours, address — from two
+deterministic sources (the page's own schema.org data, and Google Places), never guessed.
+
+### Updates
+
+#### Bug Fixes
+
+**Itinerary Day 1 showed the wrong date**
+
+- _Technical:_ `trips.start_date` is a Postgres `DATE`, serialized as a bare `"YYYY-MM-DD"`
+  string. `itinerary-panel.tsx` was doing `new Date(startDate)` — which the JS spec parses as
+  **UTC midnight** for a date-only string — then adding days in millisecond space and rendering
+  with `.toLocaleDateString()` with no `timeZone` option, which defaults to the browser's local
+  zone. For any US timezone, UTC midnight of the target day falls on the previous local calendar
+  day, so every day label showed one day early. Fixed with a new `dateForDayIndex()` helper in
+  `workspace-store.ts` that parses the same local-safe way `daysUntil()` already does (appending
+  `T00:00:00` with no `Z`, forcing local-time parsing) and advances with `setDate()` rather than
+  raw millisecond math, for DST safety. Every other date derivation in the app (the countdown,
+  lodging nights, pinned arrival times) was audited and found already safe — this bug was
+  isolated to these two call sites.
+- _For everyone:_ Day 1 of your itinerary now matches the date you actually set as your trip's
+  start, and every day after it lines up correctly too.
+
+#### Removed
+
+**The Transport tab**
+
+- Drive/Fly/Train comparison, live Duffel flight search, live EIA gas prices, and manual train
+  entry are gone, along with Trip Details' "Estimated travel time" card and its "Sort out
+  transport" task.
+- OSRM driving-route code stayed — it's shared with the Itinerary tab's distance features, which
+  are unaffected. Existing `trip_items` rows from before this change (booked flights, drives,
+  trains) are untouched and still count toward your budget; there's just no page to add more of
+  them.
+
+#### Activities
+
+**Category field removed, replaced with distance from your stay**
+
+- The Category field, column, and badges are gone from activities you add — nothing in scheduling
+  ever read it, it was purely a label. (The Browse dialog's category filters are unrelated and
+  unchanged — those drive what Google Places actually searches for.)
+- In their place: a Distance column showing how far each activity is from your booked stay, using
+  the same real driving-distance data the Itinerary tab already fetches — no extra cost, no
+  duplicate request. Click the column header to sort nearest-to-farthest. With no stay booked yet,
+  the column and the sort option are simply absent.
+
+**Click an activity to edit it**
+
+- Activities could previously only be edited by deleting and re-adding them. Clicking a row on the
+  Activities tab, or a card on the Itinerary tab, now opens an edit dialog with every field —
+  name, location, date/time, duration, cost, source link, notes — editable in place and saved with
+  one click.
+- An already-scheduled activity's Date field is locked with an explanation, since its day comes
+  from dragging it on the Itinerary tab, not from this field — editing it here would otherwise
+  silently do nothing.
+
+**Pasting a link pulls in more, and it's honest about where it came from**
+
+- Beyond the existing title/description/price/image, a pasted link now also tries to pull ticket
+  price, whether a reservation is required, hours, and address — from the page's own schema.org
+  JSON-LD data (common on ticketing and business sites) and, as a backfill, Google Places. Nothing
+  is guessed: a field neither source has stays blank, and every field a fetch actually filled in
+  shows a small "auto-filled" badge next to it so it's clear what to double-check.
+- The fetch utility is now shared between Activities and Lodging rather than duplicated —
+  deliberately deferred until now, since building the shared abstraction only made sense once a
+  second real consumer existed.
+
+#### Lodging
+
+**"Fetch details" for pasted links**
+
+- The "Add a stay to compare" form's listing-URL field now has a Fetch button, same as Activities:
+  pulls in name, price, address, and a photo where the link actually provides them, each marked
+  auto-filled. Per-stay check-in/check-out dates are not part of this — Lodging's dates are
+  trip-wide today, and most listing pages don't reliably expose per-stay dates without JS
+  rendering anyway, so that stays a separate, unstarted piece of scope.
+
+#### Housekeeping
+
+- `FEATURE_TRACKING.md`: "Presence indicator" and "Owner vs. shared trip badge" moved from
+  "Scoped, not yet built" to "Out of scope / deferred" — deliberately not pursuing either for now.
+
 ## v0.10.0 — 2026-08-19
 
 ### Overview

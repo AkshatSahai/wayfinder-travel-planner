@@ -102,7 +102,9 @@ backstop. Don't read "restricted" as "safe from all abuse".
 
 Server-only keys, all optional — each provider degrades to a setup card when absent:
 `GOOGLE_API_KEY` (Places + Geocoding), `VITE_GOOGLE_MAPS_KEY` (browser Maps key),
-`DUFFEL_API_KEY` (flights), `EIA_API_KEY` (gas prices), `TICKETMASTER_API_KEY` (events).
+`TICKETMASTER_API_KEY` (events). (`DUFFEL_API_KEY` and `EIA_API_KEY` were retired when the
+Transport tab and the Trip Details travel-time estimator were removed — both were Duffel/EIA's
+only consumers.)
 
 **`SUPABASE_SERVICE_ROLE_KEY` (server-only) is required as of v0.4.0** — trip sharing's
 `redeemInvite` and `listCollaborators` are the first code to actually call `supabaseAdmin`

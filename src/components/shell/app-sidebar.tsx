@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   MapPin,
   Bed,
-  Car,
   Sparkles,
   CalendarRange,
   LogOut,
@@ -13,12 +12,11 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { WhatsNewDialog } from "./whats-new-dialog";
 
-export type WorkspaceTab = "details" | "lodging" | "transport" | "activities" | "itinerary";
+export type WorkspaceTab = "details" | "lodging" | "activities" | "itinerary";
 
 const NAV: { value: WorkspaceTab; label: string; icon: typeof MapPin }[] = [
   { value: "details", label: "Trip Details", icon: LayoutDashboard },
   { value: "lodging", label: "Lodging", icon: Bed },
-  { value: "transport", label: "Transport", icon: Car },
   { value: "activities", label: "Activities", icon: Sparkles },
   { value: "itinerary", label: "Itinerary", icon: CalendarRange },
 ];

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { estimateTravelTime, type TravelMode } from "@/lib/travel.functions";
 import { topPlaces } from "@/lib/trip-ai.functions";
 import { Button } from "@/components/ui/button";
 import { DestinationMap, type MapCardPin } from "./destination-map";
@@ -9,9 +8,6 @@ import { DestinationPickerDialog, type ParsedTrip } from "./destination-picker-d
 import {
   MapPin,
   Pencil,
-  Car,
-  Plane,
-  TrainFront,
   CalendarClock,
   CheckCircle2,
   Circle,
@@ -19,22 +15,10 @@ import {
   X,
   Plus,
 } from "lucide-react";
-import {
-  formatHours,
-  daysUntil,
-  isBookedLodging,
-  committedItems,
-  type LatLng,
-} from "@/lib/workspace-store";
+import { daysUntil, isBookedLodging, committedItems, type LatLng } from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Item = Tables<"trip_items">;
-
-const MODES: { value: TravelMode; label: string; icon: typeof Car }[] = [
-  { value: "car", label: "Car", icon: Car },
-  { value: "flight", label: "Flight", icon: Plane },
-  { value: "train", label: "Train", icon: TrainFront },
-];
 
 interface Props {
   parsed: ParsedTrip;
@@ -72,31 +56,9 @@ export function TripDetailsPanel({
   onUpdateWaypoints,
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [mode, setMode] = useState<TravelMode>(
-    parsed.travel_mode && parsed.travel_mode !== "unknown" ? parsed.travel_mode : "car",
-  );
   const [showStops, setShowStops] = useState(false);
 
-  const estimateFn = useServerFn(estimateTravelTime);
   const sightsFn = useServerFn(topPlaces);
-
-  const estimateQ = useQuery({
-    queryKey: ["travel-estimate", origin, destination, mode, startDate],
-    queryFn: () =>
-      estimateFn({
-        data: {
-          origin,
-          destination,
-          mode,
-          party_size: partySize,
-          start_date: startDate,
-          end_date: endDate,
-        },
-      }),
-    enabled: destination.length > 0 && origin.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
 
   const sightsQ = useQuery({
     queryKey: ["top-sights", destination],
@@ -107,9 +69,7 @@ export function TripDetailsPanel({
   });
 
   // ---- Derived trip state ----
-  const scheduled = committedItems(items);
   const bookedLodging = items.filter(isBookedLodging);
-  const transportItems = scheduled.filter((i) => i.kind === "transport");
   // Counts staged activities too: the traveler has done the "add activities"
   // work as soon as one exists on the Activities tab, whether or not it has
   // been scheduled onto a day yet.
@@ -119,7 +79,6 @@ export function TripDetailsPanel({
   const tasks = [
     { done: bookedLodging.length > 0, label: "Book lodging" },
     { done: activityItems.length > 0, label: "Add activities" },
-    { done: transportItems.length > 0, label: "Sort out transport" },
     { done: budgetCents != null, label: "Set a budget" },
     { done: Boolean(startDate && endDate), label: "Set your dates" },
     { done: origin.length > 0, label: "Add a starting location" },
@@ -207,58 +166,6 @@ export function TripDetailsPanel({
           )}
         </div>
 
-        {/* ---- Travel time estimate ---- */}
-        <div
-          className="rounded-2xl border border-border bg-card p-5 shadow-soft"
-          data-testid="travel-estimate"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium">Estimated travel time</p>
-            <div className="flex gap-1 rounded-lg bg-muted p-1">
-              {MODES.map(({ value, label, icon: Icon }) => (
-                <button
-                  key={value}
-                  onClick={() => setMode(value)}
-                  aria-pressed={mode === value}
-                  className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                    mode === value
-                      ? "bg-card text-foreground shadow-soft"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {!origin || !destination ? (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Needs both a starting location and a destination.
-            </p>
-          ) : estimateQ.isFetching ? (
-            <div className="mt-3 h-8 w-32 animate-pulse rounded bg-muted" />
-          ) : (
-            <>
-              <p className="mt-2 font-display text-3xl font-semibold">
-                {estimateQ.data?.hours != null ? formatHours(estimateQ.data.hours) : "—"}
-                {estimateQ.data?.estimated && estimateQ.data.hours != null && (
-                  <span className="ml-2 align-middle text-xs font-normal text-muted-foreground">
-                    estimate
-                  </span>
-                )}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {estimateQ.data?.detail ?? "Unavailable."}
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                One way. Estimate only — no booking involved.
-              </p>
-            </>
-          )}
-        </div>
-
         {/* ---- Booking status ---- */}
         <div
           className="rounded-2xl border border-border bg-card p-5 shadow-soft"
@@ -270,11 +177,6 @@ export function TripDetailsPanel({
               label="Lodging"
               done={bookedLodging.length > 0}
               value={bookedLodging.length > 0 ? bookedLodging[0].title : "Not booked"}
-            />
-            <StatusRow
-              label="Transport"
-              done={transportItems.length > 0}
-              value={transportItems.length > 0 ? `${transportItems.length} booked` : "Not booked"}
             />
             <StatusRow
               label="Activities"
@@ -314,7 +216,7 @@ export function TripDetailsPanel({
             <div>
               <p className="text-sm font-medium">Stops along your route</p>
               <p className="text-xs text-muted-foreground">
-                The Transport tab's driving cost includes these.
+                These show up as extra stops on the route map.
               </p>
             </div>
             <Button variant="ghost" size="sm" onClick={() => setShowStops((v) => !v)}>

@@ -10,11 +10,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ExternalLink, Star, Ticket, CalendarDays, Sparkles, X, MapPin } from "lucide-react";
+import {
+  ExternalLink,
+  Star,
+  Ticket,
+  CalendarDays,
+  Sparkles,
+  X,
+  MapPin,
+  ArrowUpDown,
+} from "lucide-react";
 import { formatMoney } from "@/lib/workspace-store";
 import { ProviderSetupCard } from "./provider-setup-card";
 import { ActivityManualForm } from "./activity-manual-form";
 import { ACTIVITY_CATEGORIES } from "@/lib/activity-categories";
+import {
+  useActivityDistances,
+  formatLeg,
+  type ActivityDistanceResult,
+} from "@/hooks/use-activity-distances";
 import type { Tables } from "@/integrations/supabase/types";
 
 const CATEGORIES = ["All", ...ACTIVITY_CATEGORIES] as const;
@@ -25,7 +39,6 @@ export interface NewActivity {
   kind: "activity";
   title: string;
   subtitle?: string;
-  category: string;
   cost_cents: number;
   /**
    * Always null from this tab. Activities stage here and are only placed on a
@@ -38,6 +51,7 @@ export interface NewActivity {
 }
 
 interface Props {
+  tripId: string;
   destination: string;
   interests: string[];
   startDate: string | null;
@@ -48,6 +62,8 @@ interface Props {
    * list, so an activity the itinerary chat adds shows up here too.
    */
   activities: Item[];
+  /** The trip's booked stay, if any — anchors the Distance column. */
+  lodging: Item | null;
   /** How many of those still have no day; drives this tab's summary line. */
   unscheduledCount: number;
   /**
@@ -57,23 +73,28 @@ interface Props {
   autoBrowse: boolean;
   onAdd: (item: NewActivity) => void;
   onRemove: (id: string) => void;
+  onOpenActivity: (id: string) => void;
 }
 
 export function ActivitiesPanel({
+  tripId,
   destination,
   interests,
   startDate,
   endDate,
   partySize,
   activities,
+  lodging,
   unscheduledCount,
   autoBrowse,
   onAdd,
   onRemove,
+  onOpenActivity,
 }: Props) {
   const fn = useServerFn(searchActivities);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>("All");
   const [browseOpen, setBrowseOpen] = useState(autoBrowse);
+  const fromStay = useActivityDistances(tripId, activities, lodging);
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["activities", destination, interests.join(","), startDate, endDate],
@@ -115,8 +136,10 @@ export function ActivitiesPanel({
         activities={activities}
         unscheduledCount={unscheduledCount}
         destination={destination}
+        fromStay={fromStay}
         onRemove={onRemove}
         onBrowse={() => setBrowseOpen(true)}
+        onOpenActivity={onOpenActivity}
       />
 
       <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
@@ -216,7 +239,6 @@ export function ActivitiesPanel({
                                 kind: "activity",
                                 title: e.name,
                                 subtitle: `${e.venue} · ${e.local_date}${e.local_time ? ` ${e.local_time}` : ""}`,
-                                category: e.segment,
                                 cost_cents: price * partySize,
                                 day_index: null,
                                 details: {
@@ -321,7 +343,6 @@ export function ActivitiesPanel({
                               kind: "activity",
                               title: a.name,
                               subtitle: a.description,
-                              category: a.category,
                               cost_cents: a.est_cost_cents,
                               day_index: null,
                               // `a.lat`/`a.lng` are flat fields on the search
@@ -363,26 +384,50 @@ function detailOf(item: Item, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+type ActivitySortKey = "default" | "distance";
+
 function ActivityList({
   activities,
   unscheduledCount,
   destination,
+  fromStay,
   onRemove,
   onBrowse,
+  onOpenActivity,
 }: {
   activities: Item[];
   unscheduledCount: number;
   destination: string;
+  fromStay: ActivityDistanceResult;
   onRemove: (id: string) => void;
   onBrowse: () => void;
+  onOpenActivity: (id: string) => void;
 }) {
+  const [sortKey, setSortKey] = useState<ActivitySortKey>("default");
+  const [sortAsc, setSortAsc] = useState(true);
+  const canSortByDistance = fromStay.hasOrigin;
+
+  const toggleSort = (key: ActivitySortKey) => {
+    if (sortKey === key) setSortAsc((v) => !v);
+    else {
+      setSortKey(key);
+      setSortAsc(true);
+    }
+  };
+
   // Unscheduled first — those are the ones needing action.
-  const rows = activities
-    .slice()
-    .sort(
-      (a, b) =>
-        (a.day_index ?? -1) - (b.day_index ?? -1) || (a.sort_order ?? 0) - (b.sort_order ?? 0),
-    );
+  const rows = activities.slice().sort((a, b) => {
+    if (sortKey === "distance" && canSortByDistance) {
+      const dir = sortAsc ? 1 : -1;
+      const da = fromStay.byId.get(a.id)?.miles;
+      const db = fromStay.byId.get(b.id)?.miles;
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return dir * (da - db);
+    }
+    return (a.day_index ?? -1) - (b.day_index ?? -1) || (a.sort_order ?? 0) - (b.sort_order ?? 0);
+  });
   const scheduledCount = activities.length - unscheduledCount;
 
   return (
@@ -422,9 +467,19 @@ function ActivityList({
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Activity</th>
-                <th className="py-2 pr-3 font-medium">Category</th>
                 <th className="py-2 pr-3 font-medium">When</th>
                 <th className="py-2 pr-3 font-medium">Location</th>
+                {canSortByDistance && (
+                  <th className="py-2 pr-3 font-medium">
+                    <button
+                      onClick={() => toggleSort("distance")}
+                      className={`inline-flex items-center gap-1 hover:text-foreground ${sortKey === "distance" ? "text-foreground" : ""}`}
+                    >
+                      Distance
+                      <ArrowUpDown className="h-3 w-3" />
+                    </button>
+                  </th>
+                )}
                 <th className="py-2 pr-3 text-right font-medium">Cost</th>
                 <th className="py-2 w-8" />
               </tr>
@@ -434,11 +489,13 @@ function ActivityList({
                 const when = detailOf(a, "preferred_date");
                 const location = detailOf(a, "location");
                 const scheduled = a.day_index != null;
+                const dist = fromStay.byId.get(a.id);
                 return (
                   <tr
                     key={a.id}
-                    className="border-b border-border/60 last:border-0"
+                    className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-accent/20"
                     data-testid="activities-staged-row"
+                    onClick={() => onOpenActivity(a.id)}
                   >
                     <td className="py-2 pr-3">
                       <span className="font-medium">{a.title}</span>
@@ -447,11 +504,6 @@ function ActivityList({
                           {a.subtitle}
                         </span>
                       )}
-                    </td>
-                    <td className="py-2 pr-3">
-                      <span className="rounded-full bg-accent/40 px-2 py-0.5 text-xs">
-                        {a.category ?? "Activity"}
-                      </span>
                     </td>
                     <td className="py-2 pr-3 text-muted-foreground">
                       {scheduled ? (
@@ -479,12 +531,21 @@ function ActivityList({
                         "—"
                       )}
                     </td>
+                    {canSortByDistance && (
+                      <td className="py-2 pr-3 text-muted-foreground">
+                        {formatLeg(dist?.miles ?? null, dist?.hours ?? null) ?? "—"}
+                        {dist?.straight_line ? "*" : ""}
+                      </td>
+                    )}
                     <td className="py-2 pr-3 text-right font-medium">
                       {a.cost_cents ? formatMoney(a.cost_cents) : "Free"}
                     </td>
                     <td className="py-2">
                       <button
-                        onClick={() => onRemove(a.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemove(a.id);
+                        }}
                         aria-label={`Remove ${a.title}`}
                         className="text-muted-foreground hover:text-destructive"
                       >

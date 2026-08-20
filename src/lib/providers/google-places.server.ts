@@ -60,6 +60,7 @@ interface Place {
   primaryTypeDisplayName?: { text?: string };
   photos?: { name: string }[];
   googleMapsUri?: string;
+  regularOpeningHours?: { weekdayDescriptions?: string[] };
 }
 
 async function withTimeout<T>(p: Promise<T>, ms = TIMEOUT_MS): Promise<T> {
@@ -163,6 +164,8 @@ export interface PlaceLookup {
   rating: number | null;
   est_cost_cents: number | null;
   maps_url: string | null;
+  /** "Monday: 9:00 AM – 5:00 PM" style lines, straight from Places. */
+  hours: string[] | null;
 }
 
 /**
@@ -186,7 +189,7 @@ export async function lookupPlaceDetails(
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask":
-          "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.priceLevel,places.googleMapsUri",
+          "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.priceLevel,places.googleMapsUri,places.regularOpeningHours",
       },
       body: JSON.stringify({ textQuery, maxResultCount: 1 }),
     }),
@@ -203,6 +206,9 @@ export async function lookupPlaceDetails(
     rating: p.rating ?? null,
     est_cost_cents: p.priceLevel ? (PRICE_LEVEL_CENTS[p.priceLevel] ?? null) : null,
     maps_url: p.googleMapsUri ?? null,
+    hours: p.regularOpeningHours?.weekdayDescriptions?.length
+      ? p.regularOpeningHours.weekdayDescriptions
+      : null,
   };
 }
 

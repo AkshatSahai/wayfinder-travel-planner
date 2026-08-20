@@ -45,7 +45,13 @@ import {
   type ActivityDistanceResult,
 } from "@/hooks/use-activity-distances";
 import type { ActivityDistance } from "@/lib/travel.functions";
-import { committedItems, coordsOf, formatClockUTC, isBookedLodging } from "@/lib/workspace-store";
+import {
+  committedItems,
+  coordsOf,
+  dateForDayIndex,
+  formatClockUTC,
+  isBookedLodging,
+} from "@/lib/workspace-store";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Item = Tables<"trip_items">;
@@ -97,6 +103,8 @@ interface Props {
    * deliberately independent of which day tab is selected.
    */
   renderMapPanel: () => React.ReactNode;
+  /** Opens the activity edit dialog, shared with the Activities tab. */
+  onOpenActivity: (id: string) => void;
 }
 
 export function ItineraryPanel({
@@ -109,6 +117,7 @@ export function ItineraryPanel({
   onAdd,
   onRemove,
   onReorder,
+  onOpenActivity,
 }: Props) {
   const [blockDay, setBlockDay] = useState<number | null>(null);
   const [blockTitle, setBlockTitle] = useState("");
@@ -284,6 +293,7 @@ export function ItineraryPanel({
               fromStay={fromStay}
               open={activitiesOpen}
               onToggle={() => setActivitiesOpen((o) => !o)}
+              onOpenActivity={onOpenActivity}
             />
 
             <div className="min-w-0 flex-1 space-y-4">
@@ -307,14 +317,11 @@ export function ItineraryPanel({
               {[selectedDay].map((dayIdx) => {
                 const dayItems = byDay.get(dayIdx) ?? [];
                 const date = startDate
-                  ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(
-                      undefined,
-                      {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                      },
-                    )
+                  ? dateForDayIndex(startDate, dayIdx).toLocaleDateString(undefined, {
+                      weekday: "short",
+                      month: "short",
+                      day: "numeric",
+                    })
                   : null;
 
                 return (
@@ -382,6 +389,7 @@ export function ItineraryPanel({
                       dragging={dragging != null}
                       onRemove={onRemove}
                       onPinTime={onPinTime}
+                      onOpenActivity={onOpenActivity}
                     />
                   </DayColumn>
                 );
@@ -406,11 +414,13 @@ function ActivitiesDragPanel({
   fromStay,
   open,
   onToggle,
+  onOpenActivity,
 }: {
   activities: Item[];
   fromStay: ActivityDistanceResult;
   open: boolean;
   onToggle: () => void;
+  onOpenActivity: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: ACTIVITIES_PANEL_DROP_ID });
 
@@ -453,14 +463,27 @@ function ActivitiesDragPanel({
           <p className="py-4 text-center text-xs text-muted-foreground">No activities yet.</p>
         )}
         {activities.map((a) => (
-          <ActivityListRow key={a.id} item={a} fromStay={fromStay.byId.get(a.id) ?? null} />
+          <ActivityListRow
+            key={a.id}
+            item={a}
+            fromStay={fromStay.byId.get(a.id) ?? null}
+            onOpenActivity={onOpenActivity}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function ActivityListRow({ item, fromStay }: { item: Item; fromStay: ActivityDistance | null }) {
+function ActivityListRow({
+  item,
+  fromStay,
+  onOpenActivity,
+}: {
+  item: Item;
+  fromStay: ActivityDistance | null;
+  onOpenActivity: (id: string) => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${LIST_ID_PREFIX}${item.id}`,
   });
@@ -473,6 +496,7 @@ function ActivityListRow({ item, fromStay }: { item: Item; fromStay: ActivityDis
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onClick={() => onOpenActivity(item.id)}
       style={{ transform: transform ? CSS.Translate.toString(transform) : undefined }}
       data-testid="activities-panel-row"
       className={`cursor-grab rounded-lg border border-border bg-background p-2 text-sm touch-none active:cursor-grabbing ${
@@ -526,7 +550,7 @@ function DayTab({
   // droppables sharing one id break dnd-kit's registry.
   const { setNodeRef, isOver } = useDroppable({ id: `daytab-${dayIdx}` });
   const date = startDate
-    ? new Date(new Date(startDate).getTime() + dayIdx * 86400000).toLocaleDateString(undefined, {
+    ? dateForDayIndex(startDate, dayIdx).toLocaleDateString(undefined, {
         month: "short",
         day: "numeric",
       })
@@ -613,12 +637,14 @@ function DayTimeline({
   dragging,
   onRemove,
   onPinTime,
+  onOpenActivity,
 }: {
   tripId: string;
   dayItems: Item[];
   dragging: boolean;
   onRemove: (item: Item) => void;
   onPinTime: (item: Item, hhmm: string | null) => void;
+  onOpenActivity: (id: string) => void;
 }) {
   const legs = useDayLegs(tripId, dayItems);
   if (dayItems.length === 0) return null;
@@ -640,6 +666,7 @@ function DayTimeline({
                 isLast={idx === dayItems.length - 1}
                 onRemove={onRemove}
                 onPinTime={onPinTime}
+                onOpenActivity={onOpenActivity}
               />
               {/* Legs are plain, non-sortable rows interleaved between the
                   sortable ones, so dnd-kit's registry is untouched. They're
@@ -694,6 +721,7 @@ function SortableRow({
   isLast,
   onRemove,
   onPinTime,
+  onOpenActivity,
 }: {
   item: Item;
   located: boolean;
@@ -701,6 +729,7 @@ function SortableRow({
   isLast: boolean;
   onRemove: (item: Item) => void;
   onPinTime: (item: Item, hhmm: string | null) => void;
+  onOpenActivity: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
@@ -734,6 +763,7 @@ function SortableRow({
           item={item}
           onRemove={onRemove}
           onPinTime={onPinTime}
+          onOpenActivity={onOpenActivity}
           handleProps={{ ...attributes, ...listeners }}
         />
       </div>
@@ -754,12 +784,14 @@ function ItemRow({
   item,
   onRemove,
   onPinTime,
+  onOpenActivity,
   handleProps,
   dragging,
 }: {
   item: Item;
   onRemove?: (item: Item) => void;
   onPinTime?: (item: Item, hhmm: string | null) => void;
+  onOpenActivity?: (id: string) => void;
   handleProps?: Record<string, unknown>;
   dragging?: boolean;
 }) {
@@ -770,12 +802,14 @@ function ItemRow({
   const isActivity = item.kind === "activity";
   return (
     <div
+      onClick={isActivity && onOpenActivity ? () => onOpenActivity(item.id) : undefined}
       className={`group flex items-center gap-2 rounded-lg border border-border bg-background p-3 ${
         dragging ? "shadow-card" : ""
-      }`}
+      } ${isActivity && onOpenActivity ? "cursor-pointer" : ""}`}
     >
       <button
         {...handleProps}
+        onClick={(e) => e.stopPropagation()}
         className="cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
         title="Drag to reorder or move day"
         aria-label={`Reorder ${item.title}`}
@@ -794,6 +828,7 @@ function ItemRow({
         >
           <PopoverTrigger asChild>
             <button
+              onClick={(e) => e.stopPropagation()}
               className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
                 time
                   ? "border-primary/30 bg-primary/5 text-primary"
@@ -806,7 +841,7 @@ function ItemRow({
               {time ?? "Set time"}
             </button>
           </PopoverTrigger>
-          <PopoverContent className="w-56" align="end">
+          <PopoverContent className="w-56" align="end" onClick={(e) => e.stopPropagation()}>
             <p className="mb-2 text-xs text-muted-foreground">Planned arrival time</p>
             <div className="flex gap-2">
               <Input
@@ -843,7 +878,10 @@ function ItemRow({
       )}
       {onRemove && (
         <button
-          onClick={() => onRemove(item)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(item);
+          }}
           className="opacity-0 group-hover:opacity-100"
           title={isActivity ? "Move back to your activities list" : "Remove"}
           aria-label={isActivity ? `Unschedule ${item.title}` : `Remove ${item.title}`}

@@ -38,6 +38,25 @@ human run-through.)
       Build out itinerary" is no longer available, so the remaining path is to delete and re-add
       it from the Activities tab, which routes through `enrichActivityLocation`. Confirm that
       works. Updated 2026-08-19.
+- [ ] **Itinerary Day 1 date fix** — confirm in a real US-timezone browser that Day 1's header and
+      tab now match the trip's `start_date` exactly (was showing one day early). Added 2026-08-20.
+- [ ] **Transport tab removal** — confirm the Transport nav item/route are fully gone, Trip
+      Details no longer shows a travel-time estimate or "Sort out transport" task, and a trip
+      with pre-existing `kind: transport` items still totals its budget correctly. Added
+      2026-08-20.
+- [ ] **Activities: distance-from-lodging sort** — confirm the Distance column and sort-by-distance
+      only appear once a stay is booked, sort correctly nearest-to-farthest, and degrade cleanly
+      with no lodging booked. Added 2026-08-20.
+- [ ] **Activity edit dialog** — confirm clicking a row in the Activities tab and a card in the
+      Itinerary tab both open the same edit dialog, saved changes persist, and the Date field is
+      correctly locked (with an explanation) for already-scheduled activities. Added 2026-08-20.
+- [ ] **Deeper URL-fetch extraction (JSON-LD + Places hours)** — confirm pasting a real ticketed
+      event URL and a real venue URL pull in ticket price/reservation/hours/address only when
+      actually present in the page's JSON-LD or Google Places, never fabricated, with "auto-filled"
+      badges shown correctly. Added 2026-08-20.
+- [ ] **Lodging link-fetch ("Fetch details")** — confirm pasting an Airbnb/VRBO/hotel link on the
+      Lodging tab prefills name/price/address/image where available and leaves fields blank
+      otherwise. Added 2026-08-20.
 
 ### v0.10.0 (itinerary distances + timeline rail) — VERIFIED 2026-08-19
 
@@ -128,20 +147,14 @@ features' worth of work, none of it ever known to be correct in production.
 ## Scoped, not yet built
 (Decided to build, not started or paused.)
 
-- [ ] **Presence indicator** — show who else is currently viewing a shared trip. Realtime
-      plumbing already exists (`use-trip-realtime`); the indicator itself isn't built. Added
-      2026-08-17.
 - [ ] **Hotel data source replacement** — TravelPayouts (the original hotel search provider) is
       discontinued/dead (all endpoints 404). Manual "Add your stay" is the current workaround;
       need a real hotel search API. Top backlog item. Added 2026-08-17.
-- [ ] **Owner vs. shared trip badge** — the trips list doesn't yet distinguish trips you own from
-      trips shared with you, even though shared trips are already returned. Added 2026-08-17.
-- [ ] **Smart paste for Lodging/Transport links** — paste-a-link metadata fetch (Airbnb, VRBO,
-      Amtrak, etc.) currently only works in Activities; not extended to Lodging or Transport.
-      Added 2026-08-17.
 
 ## Out of scope / deferred
 (Explicitly decided not to build now, or ever.)
 
-- None yet — items land here once we actively decide to hold or drop them, rather than by
-  default.
+- **Presence indicator** — show who else is currently viewing a shared trip. Deliberately
+  dropped, 2026-08-20: not pursuing for now.
+- **Owner vs. shared trip badge** — distinguishing owned vs. shared trips in the trips list.
+  Deliberately dropped, 2026-08-20: not pursuing for now.
