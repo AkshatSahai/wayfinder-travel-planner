@@ -1,5 +1,103 @@
 # Wayfinder Changelog
 
+## v0.12.0 — 2026-08-20
+
+### Overview
+
+The map you plan on finally shows the day you're planning.
+
+Where you're staying was missing from the Itinerary map — and it turned out nothing had ever saved a
+stay's coordinates, anywhere. The Lodging tab quietly looked them up each time it drew its own map,
+so the stay appeared there and nowhere else. Coordinates are now saved when you add a place, older
+stays get backfilled once, and both maps read the same answer.
+
+The map itself is easier to read. Instead of every pin shouting its name through a label card that
+overlaps its neighbours, pins are small and tell you about themselves when you hover. The day you're
+looking at gets numbered stops, in the order you'll actually visit them, joined by a line — while
+everything else on the trip stays on the map, faded rather than hidden, so you can spot that
+Thursday's museum is around the corner from where you already are on Tuesday.
+
+Live hotel search is gone for good rather than staying broken. And "add a stay to compare" now means
+it: every stay you're weighing up appears on the map, with the one you've booked clearly marked.
+
+### Updates
+
+#### Bug Fixes
+
+**Your booked stay didn't appear on the Itinerary map**
+
+- _Technical:_ No write path ever persisted `details.coords` for a `kind: "lodging"` row — not the
+  manual form, not the live-search add, not `bookTripItem` — and `enrichActivityLocation` returned
+  early for anything that wasn't an activity. `LodgingPanel` masked it with a client-side
+  `geocodeLabels` fallback that was never written back, so it could pin a stay that
+  `ActivityMapPanel` (reading `coordsOf(details)` directly) saw as unlocated, losing both the pin and
+  the entire distance table. Fixed at all three levels: `enrichActivityLocation` is now
+  `enrichItemLocation` and geocodes lodging as well (by address, since a stay's title is often a
+  private label Places can't resolve); the client fallback became a shared `useStayCoords` hook used
+  by both tabs; and `useActivityDistances` resolves its origin through the same hook so a stay saved
+  before this release still anchors distances.
+- _For everyone:_ The place you're staying now shows up on the Itinerary map, and the distances from
+  it work — including for stays you added before today.
+
+**The map could fight you for the viewport**
+
+- _Technical:_ Two independent layers called `map.fitBounds`. `FitToPins` was gated on
+  `!showRoutes` — which means "no origin/destination pair", not "no path" — so drawing a route line
+  let both fire, leaving the final viewport to whichever effect resolved last. Separately,
+  `PathLayer`'s `path` is an effect dependency, so an unmemoized array rebuilt the polyline and
+  refit the bounds on every single render.
+- _For everyone:_ Panning and zooming the map stays put instead of snapping back.
+
+#### Itinerary
+
+**The day you're viewing is numbered on the map**
+
+- Stops on the selected day show as numbered pins matching the order in the timeline, joined by a
+  line showing the sequence. Reorder the day and the numbers follow.
+- The line is drawn straight between stops on purpose: it tells you the order you're visiting
+  things, not the roads you'll drive. The real mileage stays on the timeline rail, where it's
+  measured.
+- A stop with no saved location still takes its number in the sequence, so the map leaves a gap
+  rather than renumbering everything and disagreeing with the timeline.
+- Activities on other days, and ones not scheduled yet, stay on the map — small and faded, not
+  hidden. That's the point: it's how you notice two stops on different days are neighbours.
+
+**Pins tell you about themselves on hover**
+
+- Pins are now small markers rather than permanent name cards, which stops them from covering each
+  other on a busy day. Hover one for its name and how far it is from your stay.
+- If you haven't booked a stay, the card shows just the name rather than an empty distance.
+
+#### Lodging
+
+**Every stay you're comparing is on the map**
+
+- Stays you're still weighing up now appear as outlined pins, and the one you've booked as a filled
+  pin marked with a bed icon — so you can see where each option actually sits before committing.
+  Adding one to compare still changes nothing about your budget or your itinerary until you book it.
+
+#### Removed
+
+**Live hotel search**
+
+- TravelPayouts, the hotel search provider, has been discontinued — every one of its endpoints has
+  been returning 404 for some time, and the tab has been showing an error where results should be.
+  Rather than leave a broken feature in place, it's gone.
+- Adding a stay by hand is now the way Wayfinder does lodging. Since v0.11.0 you can paste a listing
+  link and have the name, price, address and photo filled in for you, which is most of what the
+  search was saving you.
+
+#### Housekeeping
+
+- Cleared 4 outstanding dependency security advisories (`npm audit` now reports zero). Lockfile
+  only — no dependency versions changed in `package.json`.
+- `supabase/config.toml` pointed at a project reference that no longer exists, which made the
+  Supabase CLI appear broken for unrelated reasons. Now points at the project the app actually uses.
+- `context.md` was a full release behind and claimed a database migration hadn't been applied when
+  it had been applied and then dropped, two releases ago. Both corrected.
+- The "Activities redesign" promised back in v0.1.0 had fallen out of every tracking file. It's
+  logged again, split into the parts still wanted and the parts v0.11.0 already superseded.
+
 ## v0.11.0 — 2026-08-20
 
 ### Overview

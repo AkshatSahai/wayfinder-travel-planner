@@ -176,7 +176,7 @@ export interface LatLng {
  * Pull coordinates off a `trip_items.details` blob.
  *
  * Reads `details.coords.{lat,lng}` — the convention every writer in this
- * codebase uses (AI enrichment, lodging, `enrichActivityLocation`) — except
+ * codebase uses (AI enrichment, lodging, `enrichItemLocation`) — except
  * one: activities added via the Places browse dialog ("Anytime — food &
  * places") were saved with flat `details.lat`/`details.lng` instead, because
  * `mapPlace()` in google-places.server.ts returns them that way and the Add

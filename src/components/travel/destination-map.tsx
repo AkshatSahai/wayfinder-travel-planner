@@ -6,7 +6,15 @@ import {
   useMap,
   useMapsLibrary,
 } from "@vis.gl/react-google-maps";
-import { MapPin, Plus } from "lucide-react";
+import { Bed, MapPin, Plus } from "lucide-react";
+
+/**
+ * What a pin *is*, which decides how it draws. The map needs this because a
+ * stay and an activity are not interchangeable: the stay anchors the trip and
+ * must stay findable, and a stay under comparison must be tellable from the one
+ * actually booked without a legend.
+ */
+export type MapPinKind = "activity" | "lodging-booked" | "lodging-candidate";
 
 export interface MapCardPin {
   id: string;
@@ -15,6 +23,17 @@ export interface MapCardPin {
   photo_url?: string | null;
   lat: number;
   lng: number;
+  kind?: MapPinKind;
+  /**
+   * Stop number for the day being viewed. Supplied by the caller rather than
+   * derived from array position, because the number has to match the itinerary
+   * rail — which counts stops the map can't plot.
+   */
+  label?: number | null;
+  /** Rendered small and faded: still findable, but not the current focus. */
+  dimmed?: boolean;
+  /** Second line of the hover card, e.g. "2.7 mi · 7 min from stay". */
+  detail?: string | null;
 }
 
 interface Props {
@@ -25,13 +44,23 @@ interface Props {
   waypoints: string[];
   selectedPinId?: string | null;
   /**
-   * Pre-computed road geometry (from OSRM) to draw instead of asking Google's
-   * Directions service. Used by the itinerary day map, where the stop order is
-   * already decided and the drive estimate comes from the server.
+   * Pre-computed geometry to draw instead of asking Google's Directions
+   * service. The itinerary day map passes straight segments through the day's
+   * stops in order — it shows *sequence*, not the road taken; the mileage on
+   * the timeline rail is the only claim about actual driving.
+   *
+   * ⚠️ Memoize this at the call site. It's an effect dependency, so a fresh
+   * array literal each render tears the polyline down and re-fits the viewport,
+   * fighting the user's pan and zoom.
    */
   routePath?: { lat: number; lng: number }[] | null;
-  /** Numbers the pins 1..n to show the day's visiting order. */
-  numbered?: boolean;
+  /**
+   * `card` (default) draws the always-visible label card — right when pins are
+   * few and each carries a photo, as on Trip Details. `pin` draws a bare marker
+   * that reveals its card on hover, for maps dense enough that the cards would
+   * overlap each other into unreadability.
+   */
+  pinStyle?: "card" | "pin";
   onPinClick?: (pin: MapCardPin) => void;
   onAddStop?: (name: string) => void;
 }
@@ -111,9 +140,17 @@ export function DestinationMap(props: Props) {
 }
 
 /**
- * Draws a pre-computed road path. Kept separate from RoutesLayer, which asks
- * Google's Directions service to work the route out; here the order and the
- * geometry are already decided server-side by OSRM.
+ * Draws a pre-computed path. Kept separate from RoutesLayer, which asks
+ * Google's Directions service to work a route out; here the geometry arrives
+ * already decided.
+ *
+ * The itinerary day map passes straight segments between consecutive stops.
+ * That is deliberate and not a placeholder for road geometry: the line's job is
+ * to show what order you visit things in, and drawing a road would put a second
+ * routing engine's opinion next to the OSRM mileage on the rail, free to
+ * disagree with it. It would also have to be re-fetched on every drag-reorder,
+ * which is exactly what `dayDistanceMatrix` exists to avoid — see
+ * `osrm.server.ts` and context.md §3.
  */
 function PathLayer({ path }: { path: { lat: number; lng: number }[] }) {
   const map = useMap();
@@ -135,6 +172,67 @@ function PathLayer({ path }: { path: { lat: number; lng: number }[] }) {
   return null;
 }
 
+/**
+ * Stacking order. The booked stay must never end up underneath something —
+ * it's the one pin that's relevant on every day — and a dimmed pin should lose
+ * to anything it overlaps. Whatever the pointer is on wins outright.
+ */
+function zIndexFor(p: MapCardPin, hovered: boolean): number {
+  if (hovered) return 1000;
+  if (p.dimmed) return 1;
+  if (p.kind === "lodging-booked") return 100;
+  if (p.label != null) return 50;
+  return 10;
+}
+
+function BarePin({ pin, selected }: { pin: MapCardPin; selected: boolean }) {
+  const base =
+    "flex items-center justify-center rounded-full border-2 shadow-card transition-transform";
+
+  if (pin.kind === "lodging-booked") {
+    return (
+      <div
+        className={`${base} h-9 w-9 border-white bg-primary text-white ring-2 ring-primary/40 ${selected ? "ring-4" : ""}`}
+        data-testid="pin-lodging-booked"
+      >
+        <Bed className="h-4 w-4" />
+      </div>
+    );
+  }
+  if (pin.kind === "lodging-candidate") {
+    // Outlined, not filled: this is an option, not a decision.
+    return (
+      <div
+        className={`${base} h-8 w-8 border-dashed border-primary/60 bg-white text-primary/70`}
+        data-testid="pin-lodging-candidate"
+      >
+        <Bed className="h-4 w-4" />
+      </div>
+    );
+  }
+  if (pin.dimmed) {
+    return (
+      <div
+        className={`${base} h-3.5 w-3.5 border-muted-foreground/45 bg-white opacity-60`}
+        data-testid="pin-dimmed"
+      />
+    );
+  }
+  if (pin.label != null) {
+    return (
+      <div
+        className={`${base} h-7 w-7 border-white bg-sidebar-active text-xs font-semibold text-white`}
+        data-testid="pin-numbered"
+      >
+        {pin.label}
+      </div>
+    );
+  }
+  return (
+    <div className={`${base} h-5 w-5 border-white bg-primary/85`} data-testid="pin-activity" />
+  );
+}
+
 function InnerMap({
   pins,
   routeDestination,
@@ -142,12 +240,13 @@ function InnerMap({
   waypoints,
   selectedPinId,
   routePath,
-  numbered,
+  pinStyle = "card",
   onPinClick,
   onAddStop,
 }: Props) {
   const showRoutes = Boolean(routeDestination && origin);
   const hasPath = Boolean(routePath && routePath.length > 1);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   return (
     <div
       className="h-full min-h-[320px] overflow-hidden rounded-2xl shadow-card"
@@ -161,52 +260,79 @@ function InnerMap({
         disableDefaultUI={false}
         className="h-full w-full"
       >
-        <FitToPins pins={pins} enabled={!showRoutes} />
+        {/*
+          Both fitters call `map.fitBounds`, so letting them run together makes
+          the viewport depend on which effect resolved last.
+        */}
+        <FitToPins pins={pins} enabled={!showRoutes && !hasPath} />
         {showRoutes && (
           <RoutesLayer origin={origin!} destination={routeDestination!} waypoints={waypoints} />
         )}
         {hasPath && <PathLayer path={routePath!} />}
-        {pins.map((p, idx) => (
+        {pins.map((p) => (
           <AdvancedMarker
             key={p.id}
             position={{ lat: p.lat, lng: p.lng }}
+            zIndex={zIndexFor(p, hoveredId === p.id)}
             onClick={() => onPinClick?.(p)}
           >
-            <div
-              className={`flex w-44 items-center gap-2 rounded-xl bg-white p-2 text-left shadow-card transition-transform hover:scale-105 ${selectedPinId === p.id ? "ring-2 ring-primary" : ""}`}
-            >
-              {numbered ? (
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-active text-sm font-semibold text-white">
-                  {idx + 1}
-                </div>
-              ) : p.photo_url ? (
-                <img
-                  src={p.photo_url}
-                  alt=""
-                  className="h-9 w-9 shrink-0 rounded-lg object-cover"
-                />
-              ) : (
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-active/15">
-                  <MapPin className="h-4 w-4 text-primary" />
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-semibold text-gray-900">{p.name}</p>
-                <p className="truncate text-[10px] text-gray-500">{p.subtitle}</p>
+            {pinStyle === "pin" ? (
+              <div
+                className="relative flex flex-col items-center"
+                onMouseEnter={() => setHoveredId(p.id)}
+                onMouseLeave={() => setHoveredId((cur) => (cur === p.id ? null : cur))}
+                data-testid={`map-pin-${p.id}`}
+              >
+                {hoveredId === p.id && (
+                  <div
+                    className="absolute bottom-full mb-1.5 w-max max-w-[13rem] rounded-lg bg-white px-2.5 py-1.5 text-left shadow-card"
+                    data-testid="map-pin-hovercard"
+                  >
+                    <p className="truncate text-xs font-semibold text-gray-900">{p.name}</p>
+                    {/* Only when there's something true to say — an absent
+                        distance means no booked stay, not a zero. */}
+                    {p.detail && <p className="truncate text-[10px] text-gray-500">{p.detail}</p>}
+                  </div>
+                )}
+                <BarePin pin={p} selected={selectedPinId === p.id} />
               </div>
-              {onAddStop && (
-                <button
-                  title="Add as stop on the route"
-                  className="shrink-0 rounded-full bg-sidebar-active p-1 text-white hover:opacity-90"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAddStop(p.name);
-                  }}
-                >
-                  <Plus className="h-3 w-3" />
-                </button>
-              )}
-            </div>
+            ) : (
+              <div
+                className={`flex w-44 items-center gap-2 rounded-xl bg-white p-2 text-left shadow-card transition-transform hover:scale-105 ${selectedPinId === p.id ? "ring-2 ring-primary" : ""}`}
+              >
+                {p.label != null ? (
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-active text-sm font-semibold text-white">
+                    {p.label}
+                  </div>
+                ) : p.photo_url ? (
+                  <img
+                    src={p.photo_url}
+                    alt=""
+                    className="h-9 w-9 shrink-0 rounded-lg object-cover"
+                  />
+                ) : (
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-active/15">
+                    <MapPin className="h-4 w-4 text-primary" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-semibold text-gray-900">{p.name}</p>
+                  <p className="truncate text-[10px] text-gray-500">{p.subtitle}</p>
+                </div>
+                {onAddStop && (
+                  <button
+                    title="Add as stop on the route"
+                    className="shrink-0 rounded-full bg-sidebar-active p-1 text-white hover:opacity-90"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAddStop(p.name);
+                    }}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            )}
           </AdvancedMarker>
         ))}
       </GoogleMap>

@@ -260,54 +260,6 @@ export const topPlaces = createServerFn({ method: "POST" })
     }
   });
 
-// -------- Lodging (TravelPayouts) --------
-export const searchLodging = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) =>
-    z
-      .object({
-        destination: z.string(),
-        start_date: z.string().nullable(),
-        end_date: z.string().nullable(),
-        party_size: z.number().int().nullable(),
-        interests: z.array(z.string()),
-        budget_cents: z.number().int().nullable(),
-      })
-      .parse(d),
-  )
-  .handler(async ({ data }) => {
-    if (!data.start_date || !data.end_date) {
-      return {
-        source: "travelpayouts" as const,
-        listings: [],
-        error: "Add trip dates to search live hotels.",
-      };
-    }
-    try {
-      const { searchHotels } = await import("./providers/travelpayouts.server");
-      const listings = await searchHotels({
-        destination: data.destination,
-        checkIn: data.start_date,
-        checkOut: data.end_date,
-        adults: Math.max(1, data.party_size ?? 2),
-      });
-      return {
-        source: "travelpayouts" as const,
-        listings,
-        error:
-          listings.length === 0
-            ? "No live hotel results for these dates. Try adjusting dates or destination."
-            : null,
-      };
-    } catch (err) {
-      console.error("[lodging] travelpayouts error:", err);
-      return {
-        source: "travelpayouts" as const,
-        listings: [],
-        error: `Live hotel search unavailable: ${errMsg(err)}`,
-      };
-    }
-  });
-
 // -------- Activities (Google Places) --------
 export const searchActivities = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>

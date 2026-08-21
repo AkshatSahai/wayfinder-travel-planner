@@ -384,9 +384,6 @@ function WorkspacePage() {
               originCoords={parsed.origin_coords ?? null}
               startDate={trip.start_date}
               endDate={trip.end_date}
-              partySize={trip.party_size ?? 2}
-              interests={interests}
-              budgetCents={trip.budget_cents}
               stays={stays}
               onAdd={(item) => handleAdd(item)}
               onBook={(id) => bookMut.mutate(id)}
@@ -419,15 +416,22 @@ function WorkspacePage() {
               numDays={numDays}
               startDate={trip.start_date}
               onPinTime={(item, hhmm) => pinTimeMut.mutate({ item, hhmm })}
-              renderMapPanel={() => (
-                // Every activity, not the selected day's — the map is a
-                // reference for the whole trip. `items.find(isBookedLodging)`
-                // rather than any lodging row: candidates are still under
-                // comparison and shouldn't anchor distances.
+              renderMapPanel={({ selectedDay, dayItems }) => (
+                // Every activity, not just the selected day's — the map stays a
+                // reference for the whole trip, and the day only decides what
+                // gets numbered and what gets faded.
+                //
+                // Both lodging props are needed and they are not the same
+                // thing: `stays` is every row, so candidates can be seen while
+                // they're being compared, while `lodging` is specifically the
+                // booked one, because a candidate must not anchor distances.
                 <ActivityMapPanel
                   tripId={tripId}
                   activities={allActivities}
+                  stays={stays}
                   lodging={items.find(isBookedLodging) ?? null}
+                  selectedDay={selectedDay}
+                  dayItems={dayItems}
                 />
               )}
               onAdd={(item) => handleAdd(item)}

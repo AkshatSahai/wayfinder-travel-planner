@@ -58,6 +58,36 @@ human run-through.)
       Lodging tab prefills name/price/address/image where available and leaves fields blank
       otherwise. Added 2026-08-20.
 
+#### v0.12.0 — added 2026-08-20, none verified
+
+Static gates all passed (`tsc`, `eslint`, `build`) — which, per §10 of context.md, is not a result.
+Everything here needs a real browser, and the map items additionally need a Maps key on an allowed
+referrer, so production is the only place they can be checked.
+
+- [ ] **Booked stay pins on the Itinerary map** — the reported bug. Confirm on a trip whose stay
+      predates v0.12.0 (address text, no `details.coords`) that the stay now pins, the
+      `no-lodging-notice` is gone, and the distance table is populated. ⚠️ Also worth pinning down
+      **which** of the two causes was real: if the stay was already pinning and just unreadable, the
+      geocode persistence is still correct but was not the fix.
+- [ ] **Newly added stays persist coordinates** — add a stay with an address, then confirm the row's
+      `details.coords` is set at write time (needs `GOOGLE_API_KEY`), not just resolved client-side.
+- [ ] **Candidate vs booked pins** — visually distinct without a legend; adding a candidate changes
+      neither budget totals nor which stay anchors distances.
+- [ ] **Day numbering matches the rail** — including after a drag-reorder, and including a day
+      containing a stop with no coordinates (that stop must consume its number, leaving a visible
+      gap on the map rather than renumbering the rest).
+- [ ] **Hover cards** — distance values match the Activities list; no booked stay means name only,
+      not a placeholder.
+- [ ] **Request counts unchanged** — `distancesFromLodging` and `dayDistanceMatrix` must not
+      increase, and a drag-reorder must fire neither. This is the assertion that proves the day map
+      didn't quietly become the v0.9.0 one again.
+- [ ] **Viewport is not hijacked** — pan/zoom the map, trigger a re-render, confirm the polyline
+      doesn't refit the bounds. `FitToPins` and `PathLayer` both call `fitBounds` and were racing
+      before this release.
+- [ ] **A day with 5+ stops** — numbered pins and the connector stay legible without bad overlap.
+- [ ] **TravelPayouts removal** — Lodging tab has exactly one add flow, no console errors, and
+      stays previously added with `source: "live"` still render and still count toward budget.
+
 ### v0.10.0 (itinerary distances + timeline rail) — VERIFIED 2026-08-19
 
 Headless Edge via `puppeteer-core` against the live Supabase project, on a seeded Chicago trip:
@@ -147,14 +177,49 @@ features' worth of work, none of it ever known to be correct in production.
 ## Scoped, not yet built
 (Decided to build, not started or paused.)
 
-- [ ] **Hotel data source replacement** — TravelPayouts (the original hotel search provider) is
-      discontinued/dead (all endpoints 404). Manual "Add your stay" is the current workaround;
-      need a real hotel search API. Top backlog item. Added 2026-08-17.
+- [ ] **Activities redesign — the parts that are still wanted.** Promised in v0.1.0's "Upcoming" as
+      "richer filtering, multi-day suggestions, and interest-based ranking," then tracked in no
+      file at all for ten releases. Recovered 2026-08-20; it was lost scope, not a decision.
+      Not all of it survives contact with what shipped since, so it is split rather than restored
+      wholesale:
+      - **Still live:** multi-day suggestions; interest-based ranking (the trip already carries
+        `interests` and nothing on the Activities tab reads them).
+      - **Partly superseded:** "richer filtering." v0.11.0 deliberately deleted the Category field
+        and added a distance-from-stay sort, which covered the actual complaint. Any filtering
+        work here should start from what's missing now, not from the v0.1.0 wording.
+- [ ] **Per-stay check-in/check-out dates** — Lodging's dates are trip-wide today. Named as
+      out-of-scope in v0.11.0's changelog ("a separate, unstarted piece of scope") but never
+      tracked anywhere. Logged 2026-08-20.
 
 ## Out of scope / deferred
 (Explicitly decided not to build now, or ever.)
 
+- **Hotel data source replacement** — **DECIDED 2026-08-20: removed, not replaced.** TravelPayouts
+  was discontinued (every endpoint 404s with a valid token) and sat in six consecutive "Upcoming"
+  sections without being built. Manual "Add your stay" is now the permanent flow; link-fetch
+  prefill (v0.11.0) removed most of the tedium that made a live API worth chasing. The provider,
+  the `searchLodging` server fn and the whole live-search UI were deleted in v0.12.0. Recorded
+  rather than deleted so the decision is visible: this is a choice, not an oversight.
+- **Shared Maps `APIProvider`** — deferred 2026-08-20, having been scoped into v0.12.0 and then
+  pulled back out. It looked like a tidy-up inside the trip workspace, but `PlaceAutocomplete`
+  mounts its own provider on the **landing page** too, so collapsing to one means a provider at the
+  root — changing how the Maps API loads for the whole app, not just the workspace. That is not
+  something any static gate can check, and maps can't be exercised locally (no key; `localhost:8080`
+  isn't on the referrer allowlist), so it would ship to production unverifiable, alongside the very
+  map changes that most need to work. Worth doing on its own, with a preview deploy.
+- **Migrate server fns off deprecated `.inputValidator()`** — deferred 2026-08-20. Touches every
+  server function; no urgency; not worth bundling into a large release.
+- **Byte-cache proxied Places photos** — deferred 2026-08-20. A perf change with no current
+  trigger; `/api/places/photo` already sets a 24h immutable `Cache-Control`.
 - **Presence indicator** — show who else is currently viewing a shared trip. Deliberately
   dropped, 2026-08-20: not pursuing for now.
 - **Owner vs. shared trip badge** — distinguishing owned vs. shared trips in the trips list.
   Deliberately dropped, 2026-08-20: not pursuing for now.
+
+## Known inconsistency, not yet decided
+
+- **The Itinerary map's distance table still has a Category column.** v0.11.0 removed Category from
+  the Activities tab as "decorative, not something scheduling ever read," but
+  `activity-map-panel.tsx` still renders it. Left alone in v0.12.0 rather than silently widening
+  that release's scope — but the two tabs now disagree about whether Category exists. Noticed
+  2026-08-20.

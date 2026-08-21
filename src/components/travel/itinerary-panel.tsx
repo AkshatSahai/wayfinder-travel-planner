@@ -99,10 +99,21 @@ interface Props {
   ) => void;
   /**
    * The reference map and distance list, rendered full-width beneath the day
-   * row. Takes no day index: it shows every activity on the trip, so it is
-   * deliberately independent of which day tab is selected.
+   * row. Still plots every activity on the trip — nothing is hidden — but it
+   * now receives the selected day so it can number that day's stops in visiting
+   * order and mute the rest.
+   *
+   * ⚠️ This deliberately reverses the v0.9.0 rule that the map takes no day
+   * index. What v0.9.0 removed was a per-day map that re-routed the day through
+   * OSRM and annotated it with AI-written notes, and that is **not** what this
+   * is: no AI, no routing call, and every other day's activities stay on the
+   * map on purpose, so you can notice that tomorrow's stop is around the corner
+   * from today's. Read context.md §3 before "restoring" the old behaviour.
+   *
+   * `dayItems` is the day's stops in rail order, passed rather than re-derived
+   * so the pin numbers cannot drift from the timeline they're meant to match.
    */
-  renderMapPanel: () => React.ReactNode;
+  renderMapPanel: (ctx: { selectedDay: number; dayItems: Item[] }) => React.ReactNode;
   /** Opens the activity edit dialog, shared with the Activities tab. */
   onOpenActivity: (id: string) => void;
 }
@@ -397,10 +408,13 @@ export function ItineraryPanel({
             </div>
           </div>
 
-          {/* Reference map + distance list, full width. Rendered once, outside
-              the selected-day branch above — it shows the whole trip's
-              activities, not the selected day's. */}
-          <div data-testid="activity-map-row">{renderMapPanel()}</div>
+          {/* Reference map + distance list, full width. Still rendered once,
+              outside the selected-day branch above, and still plots the whole
+              trip — the selected day is passed only so today's stops can be
+              numbered and the other days muted. */}
+          <div data-testid="activity-map-row">
+            {renderMapPanel({ selectedDay, dayItems: byDay.get(selectedDay) ?? [] })}
+          </div>
         </div>
 
         <DragOverlay>{dragging ? <ItemRow item={dragging} dragging /> : null}</DragOverlay>

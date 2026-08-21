@@ -1,6 +1,8 @@
+import { useMemo } from "react";
 import { Bed, Car, Info, MapPin } from "lucide-react";
-import { useActivityDistances } from "@/hooks/use-activity-distances";
-import { coordsOf, formatHours, formatMoney } from "@/lib/workspace-store";
+import { formatLeg, useActivityDistances } from "@/hooks/use-activity-distances";
+import { useStayCoords } from "@/hooks/use-stay-coords";
+import { coordsOf, formatHours, formatMoney, isBookedLodging } from "@/lib/workspace-store";
 import { DestinationMap, type MapCardPin } from "./destination-map";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -10,54 +12,120 @@ interface Props {
   tripId: string;
   /** Every activity on the trip — scheduled and unscheduled alike. */
   activities: Item[];
-  /** The confirmed stay, when one has been booked. */
+  /** Every lodging row: the booked stay and any candidates still being compared. */
+  stays: Item[];
+  /** The confirmed stay, when one has been booked. Anchors every distance. */
   lodging: Item | null;
+  /** The day tab currently open, used only for numbering and emphasis. */
+  selectedDay: number;
+  /** That day's stops in timeline-rail order. The pin numbers come from here. */
+  dayItems: Item[];
 }
 
-const LODGING_PIN_ID = "lodging";
-
 /**
- * The Itinerary tab's reference map: where everything is, and how far each
- * activity is from where you're staying.
+ * The Itinerary tab's reference map: where everything is, how far each activity
+ * is from where you're staying, and — for the day you're looking at — what
+ * order you visit things in.
  *
- * Deliberately static. It plots the whole activity set regardless of which day
- * anything sits on, and it does not reorder, route, or suggest — the day tabs
- * above it are the only thing that decides sequence. It replaced a per-day map
- * that re-routed the selected day's stops through OSRM and annotated them with
- * AI-written notes; see context.md §3 (v0.9.0) for why that went.
+ * It plots the whole trip. Activities on other days and activities not yet
+ * scheduled stay on the map, drawn small and faded rather than hidden, because
+ * the useful accident is noticing that a stop on Thursday is a block from where
+ * you'll already be on Tuesday. Hiding them would remove the only way to see
+ * that without switching tabs.
+ *
+ * ⚠️ **v0.12.0 gave this map a day again, on purpose.** v0.9.0 removed a per-day
+ * map, and context.md §3 warned that re-scoping this one would recreate it. What
+ * it actually removed was AI-written day notes and a live OSRM re-route on every
+ * reorder; neither is here. The numbering comes from the rail's own array and
+ * the connector is drawn straight, so nothing is re-fetched when a day is
+ * dragged into a new order. Read that section before undoing this.
  */
-export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
+export function ActivityMapPanel({
+  tripId,
+  activities,
+  stays,
+  lodging,
+  selectedDay,
+  dayItems,
+}: Props) {
   const located = activities
     .map((a) => ({ item: a, coords: coordsOf(a.details) }))
     .filter((a): a is { item: Item; coords: { lat: number; lng: number } } => a.coords != null);
   const unlocated = activities.filter((a) => coordsOf(a.details) == null);
 
-  const lodgingCoords = lodging ? coordsOf(lodging.details) : null;
+  // Resolves a stay's address when the row itself has no coordinates — every
+  // stay saved before v0.12.0. Shared with the Lodging tab, which is the point:
+  // a stay that pins there now pins here too.
+  const { coordsFor: stayCoordsFor } = useStayCoords(stays);
+  const lodgingCoords = lodging ? stayCoordsFor(lodging) : null;
 
   // Shared with the Activities panel's "from stay" line — same query key, so
   // both surfaces render off ONE request rather than each fetching its own.
   const q = useActivityDistances(tripId, activities, lodging);
   const distanceById = q.byId;
 
+  /**
+   * Stop numbers come from the day's own array, and every non-lodging stop
+   * consumes one whether or not it can be plotted. A stop with no coordinates
+   * therefore leaves a gap in the numbers on the map — deliberately. Closing
+   * the gap would renumber the plotted stops and make the map contradict the
+   * rail, which is the one thing these numbers exist to agree with.
+   */
+  const numberById = useMemo(() => {
+    const m = new Map<string, number>();
+    dayItems.filter((i) => i.kind !== "lodging").forEach((i, idx) => m.set(i.id, idx + 1));
+    return m;
+  }, [dayItems]);
+
+  /**
+   * Straight segments through the day's stops in order, starting at the stay
+   * when it anchors this day. Shows sequence, not the drive — see `PathLayer`.
+   * Memoized on the ordered ids so panning isn't interrupted by a rebuild.
+   */
+  const daySignature = dayItems.map((i) => i.id).join(">");
+  const routePath = useMemo(() => {
+    const pts = dayItems
+      .map((i) => (i.kind === "lodging" ? stayCoordsFor(i) : coordsOf(i.details)))
+      .filter((c): c is { lat: number; lng: number } => c != null);
+    return pts.length > 1 ? pts : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [daySignature, lodgingCoords]);
+
+  const stayPins: MapCardPin[] = stays.flatMap((s) => {
+    const c = stayCoordsFor(s);
+    if (!c) return [];
+    const booked = isBookedLodging(s);
+    return [
+      {
+        id: s.id,
+        name: s.title,
+        subtitle: booked ? "Where you're staying" : "Still comparing",
+        detail: booked ? "Where you're staying" : "Still comparing",
+        kind: booked ? ("lodging-booked" as const) : ("lodging-candidate" as const),
+        lat: c.lat,
+        lng: c.lng,
+      },
+    ];
+  });
+
   const pins: MapCardPin[] = [
-    ...(lodgingCoords
-      ? [
-          {
-            id: LODGING_PIN_ID,
-            name: lodging!.title,
-            subtitle: "Where you're staying",
-            lat: lodgingCoords.lat,
-            lng: lodgingCoords.lng,
-          },
-        ]
-      : []),
-    ...located.map((a) => ({
-      id: a.item.id,
-      name: a.item.title,
-      subtitle: a.item.category ?? "Activity",
-      lat: a.coords.lat,
-      lng: a.coords.lng,
-    })),
+    ...stayPins,
+    ...located.map((a) => {
+      const d = distanceById.get(a.item.id);
+      const leg = formatLeg(d?.miles ?? null, d?.hours ?? null);
+      return {
+        id: a.item.id,
+        name: a.item.title,
+        subtitle: a.item.category ?? "Activity",
+        // No booked stay means no distance to state — the name alone, rather
+        // than a placeholder implying a measurement that wasn't made.
+        detail: leg ? `${leg} from stay` : null,
+        label: numberById.get(a.item.id) ?? null,
+        dimmed: !numberById.has(a.item.id),
+        lat: a.coords.lat,
+        lng: a.coords.lng,
+      };
+    }),
   ];
 
   return (
@@ -65,7 +133,8 @@ export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
       <div>
         <h3 className="font-display text-lg font-semibold">Where everything is</h3>
         <p className="text-sm text-muted-foreground">
-          Every activity you've added, wherever it sits on the plan.
+          Day {selectedDay + 1}&apos;s stops are numbered in the order you&apos;ll visit them.
+          Everything else on the trip stays on the map, faded.
         </p>
       </div>
 
@@ -76,10 +145,9 @@ export function ActivityMapPanel({ tripId, activities, lodging }: Props) {
             routeDestination={null}
             origin={null}
             waypoints={[]}
-            routePath={null}
-            // Rings the stay so it reads differently from the activities around
-            // it, without the shared map component needing a notion of "kind".
-            selectedPinId={lodgingCoords ? LODGING_PIN_ID : null}
+            routePath={routePath}
+            pinStyle="pin"
+            selectedPinId={null}
           />
         </div>
       ) : (

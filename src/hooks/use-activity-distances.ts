@@ -7,6 +7,7 @@ import {
   type DayLeg,
 } from "@/lib/travel.functions";
 import { coordsOf, type LatLng } from "@/lib/workspace-store";
+import { useStayCoords } from "./use-stay-coords";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Item = Tables<"trip_items">;
@@ -54,7 +55,18 @@ export interface ActivityDistanceResult {
   hasOrigin: boolean;
 }
 
-/** Driving distance and time from the booked stay to each located activity. */
+/**
+ * Driving distance and time from the booked stay to each located activity.
+ *
+ * The origin resolves through `useStayCoords` rather than reading `coordsOf`
+ * directly, so a stay carrying only an address — every stay saved before
+ * v0.12.0 — still anchors distances instead of silently producing none.
+ *
+ * Doing that inside the hook rather than at the call sites is deliberate: all
+ * three callers have to resolve the origin identically, or they'd derive
+ * different `originKey`s for the same stay and split one shared query into
+ * several.
+ */
 export function useActivityDistances(
   tripId: string,
   activities: Item[],
@@ -62,7 +74,8 @@ export function useActivityDistances(
 ): ActivityDistanceResult {
   const fn = useServerFn(distancesFromLodging);
   const rows = located(activities);
-  const origin = lodging ? coordsOf(lodging.details) : null;
+  const { coordsFor: stayCoordsFor } = useStayCoords(lodging ? [lodging] : []);
+  const origin = lodging ? stayCoordsFor(lodging) : null;
   const originKey = origin ? `${origin.lat},${origin.lng}` : "none";
 
   const q = useQuery({

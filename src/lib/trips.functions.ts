@@ -156,23 +156,37 @@ export const getTrip = createServerFn({ method: "POST" })
   });
 
 /**
- * Best-effort geocoding for a freshly-added activity, run for every source
- * (manual form, Places browse) rather than each entry point doing its own
- * lookup — the Itinerary map only plots what `coordsOf()` can find, and the
- * manual-add path in particular never resolved coordinates at all despite
- * `place-autocomplete.tsx`'s docstring claiming it happens "server-side at
- * submit" (that claim had nothing behind it before this).
+ * Best-effort geocoding for a freshly-added activity **or lodging row**, run
+ * for every source (manual form, Places browse) rather than each entry point
+ * doing its own lookup — the Itinerary map only plots what `coordsOf()` can
+ * find, and the manual-add path in particular never resolved coordinates at all
+ * despite `place-autocomplete.tsx`'s docstring claiming it happens "server-side
+ * at submit" (that claim had nothing behind it before this).
  *
- * Since v0.9.0 this is the ONLY geocoding path for activities: the AI
- * itinerary builder that used to enrich staged activities as a side effect of
- * scheduling them is gone, so an activity that isn't geocoded here will never
- * be geocoded at all. Don't make it conditional.
+ * Since v0.9.0 this is the ONLY geocoding path for activities: the AI itinerary
+ * builder that used to enrich staged activities as a side effect of scheduling
+ * them is gone, so an activity that isn't geocoded here will never be geocoded
+ * at all. Don't make it conditional.
+ *
+ * ⚠️ **Lodging was added in v0.12.0 and is the reason this is no longer named
+ * `enrichActivityLocation`.** Before that, `kind: "lodging"` returned early and
+ * *nothing anywhere persisted coordinates for a stay*: the manual form, the
+ * live-search add, and `bookTripItem` all wrote rows with an address string and
+ * no `coords`. The Lodging tab hid this behind a client-side `geocodeLabels`
+ * fallback whose result was never written back, so a stay pinned on the Lodging
+ * map and was invisible on the Itinerary map, which reads `coordsOf(details)`.
+ * Don't narrow this back to activities without also fixing that.
+ *
+ * The query differs by kind on purpose. An activity is geocoded by its **title**
+ * ("Field Museum") hinted by its location, but a stay's title is often a private
+ * label ("Airbnb — cozy loft") that Places cannot resolve, so a stay is geocoded
+ * by its **address** where one was typed, falling back to the title.
  *
  * A no-op when coords already exist (the browse dialog attaches real ones), so
  * this never duplicates a lookup that already succeeded. When there's no typed
  * location either, falls back to the trip's destination as the geocoding hint.
- * Never throws: a missing key, an outage, or zero results just means the
- * activity saves without coordinates, same as before this existed.
+ * Never throws: a missing key, an outage, or zero results just means the row
+ * saves without coordinates, same as before this existed.
  */
 type TripLookupContext = {
   supabase: {
@@ -187,18 +201,25 @@ type TripLookupContext = {
   };
 };
 
-async function enrichActivityLocation(
+async function enrichItemLocation(
   context: TripLookupContext,
   item: { trip_id: string; kind: string; title: string; details?: unknown },
 ): Promise<Record<string, unknown> | undefined> {
-  if (item.kind !== "activity") return undefined;
+  if (item.kind !== "activity" && item.kind !== "lodging") return undefined;
   const details = (item.details ?? {}) as Record<string, unknown>;
   const coords = details.coords as { lat?: number; lng?: number } | undefined;
   if (coords && typeof coords.lat === "number" && typeof coords.lng === "number") return undefined;
 
   try {
     const { lookupPlaceDetails } = await import("./providers/google-places.server");
-    let near = typeof details.location === "string" && details.location ? details.location : null;
+    const typedLocation =
+      typeof details.location === "string" && details.location ? details.location : null;
+    // A stay resolves by address, an activity by name — see the docstring.
+    const query = item.kind === "lodging" ? (typedLocation ?? item.title) : item.title;
+    let near = typedLocation;
+    // An address already carries its own city; hinting it with itself narrows
+    // nothing and can push Places onto a worse match.
+    if (query === near) near = null;
     if (!near) {
       const { data: trip } = await context.supabase
         .from("trips")
@@ -207,7 +228,7 @@ async function enrichActivityLocation(
         .maybeSingle();
       near = (trip?.destination as string | undefined) ?? null;
     }
-    const found = await lookupPlaceDetails(item.title, near);
+    const found = await lookupPlaceDetails(query, near);
     if (!found || found.lat == null || found.lng == null) return undefined;
     return {
       ...details,
@@ -227,10 +248,7 @@ export const addTripItem = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     const { activity, ...item } = data;
-    const enrichedDetails = await enrichActivityLocation(
-      context as unknown as TripLookupContext,
-      item,
-    );
+    const enrichedDetails = await enrichItemLocation(context as unknown as TripLookupContext, item);
     const { data: row, error } = await context.supabase
       .from("trip_items")
       .insert({

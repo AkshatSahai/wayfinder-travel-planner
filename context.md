@@ -6,10 +6,14 @@
 > hit a trap worth remembering, or close/open a backlog item, update this file in
 > the same commit.
 
-Last updated: **2026-08-19** — after **v0.9.0** removed all AI from the Itinerary tab (the A2
-scheduler, A3 chat, A4 advisor, and A5 day map) and replaced it with a static activity map plus a
-distance list. Several §3 subsections below are now marked **SUPERSEDED**; they are kept on
-purpose — read them before proposing to rebuild anything they describe.
+Last updated: **2026-08-20** — after **v0.11.0** (Day 1 date off-by-one fixed at the root, the
+Transport tab removed entirely, Activities' Category field replaced with a distance-from-stay
+sort, click-to-edit dialogs, and deeper JSON-LD/Places link extraction shared with Lodging).
+
+Earlier, **v0.9.0** removed all AI from the Itinerary tab (the A2 scheduler, A3 chat, A4 advisor,
+and A5 day map) and replaced it with a static activity map plus a distance list. Several §3
+subsections below are marked **SUPERSEDED**; they are kept on purpose — read them before proposing
+to rebuild anything they describe.
 
 ---
 
@@ -552,9 +556,24 @@ pill it used to render in was shared with the A4 advisor, and that pill went wit
 
 **Three consequences that are easy to get wrong if you touch this later:**
 
-- **The map is trip-wide, not day-scoped.** `renderMapPanel` deliberately takes no day index. It
-  renders once, below the day row, and is unaffected by `selectedDay`. Re-scoping it to the
-  selected day would quietly recreate the thing that was removed.
+- **The map is trip-wide, not day-scoped.** — **REVISED (v0.12.0), not superseded.** The rule was:
+  `renderMapPanel` takes no day index, so re-scoping it can't quietly recreate the deleted per-day
+  map. v0.12.0 gives it `{ selectedDay, dayItems }`, and the reasoning behind the original rule is
+  worth keeping straight, because the rule outlived the danger it was written for.
+
+  What v0.9.0 actually deleted was a map that **re-routed the selected day through OSRM on every
+  reorder** and hung **AI-written notes** off it. The invariant that mattered was "no AI, and no
+  per-reorder routing call," and the no-day-index rule was a cheap way to guarantee it.
+
+  What v0.12.0 does instead: the map still plots the **whole trip** — other days and unscheduled
+  activities stay visible, drawn faded, which is the point — and the day only decides which pins are
+  numbered and which are muted. Numbers come from the rail's own `dayItems` array, so they can't
+  disagree with the timeline. The connector is drawn as **straight segments** between stops, so it
+  costs no request and re-fetches nothing on a drag. Zero AI, zero new server functions.
+
+  ⚠️ So the live invariant is **not** "the map must not know the day." It is: *the itinerary map
+  must issue no AI call and no per-reorder routing call, and must never hide activities that aren't
+  on the selected day.* Check a change against that, not against the old wording.
 - **`coordsOf()` moved to `workspace-store.ts` and must stay reachable.** It was salvaged out of
   the deleted `itinerary-day-panel.tsx`. Its `details.coords` → flat `details.lat`/`details.lng`
   fallback is the whole of the v0.7.1 fix; losing it silently un-plots every activity added
@@ -877,6 +896,80 @@ not a code change to the existing trip/item server fns.
 
 ## 4. What shipped recently
 
+### v0.12.0 (day-aware itinerary map, lodging coordinates, TravelPayouts removed) — 2026-08-20
+
+**Not verified in a browser.** All three static gates pass; per §10 that is not a result. The map
+work in particular cannot be checked locally at all (§6).
+
+**The lodging-pin bug had a data cause, not a rendering one — and the interesting part is why it
+hid for so long.** Nothing on any write path ever persisted `details.coords` for a stay: the manual
+form, the live-search add and `bookTripItem` all wrote an address string and no coordinates, and
+`enrichActivityLocation` returned early for anything that wasn't `kind: "activity"`. The Lodging tab
+papered over this with a client-side `geocodeLabels` fallback whose result was **never written
+back**, so that one tab could pin a stay while the Itinerary map — reading `coordsOf(details)`
+directly — got `null` and silently dropped the pin *and* the whole distance table. Two surfaces,
+two different answers to "where is this stay," and neither was wrong on its own terms.
+
+Fixed in three places so they can't diverge again: `enrichActivityLocation` became
+`enrichItemLocation` and now geocodes lodging too (by **address** where one was typed, since a
+stay's title is often a private label like "Airbnb — cozy loft" that Places can't resolve); the
+client-side fallback moved into a shared `useStayCoords` hook consumed by both tabs; and
+`useActivityDistances` resolves its origin through that same hook, so a pre-v0.12.0 stay anchors
+distances instead of quietly producing none. The geocode result is deliberately **not** written back
+to the row on read — a read path that mutates would fire for every viewer of a shared trip.
+
+**The map got a day back, deliberately.** See §3's revised "trip-wide, not day-scoped" entry for why
+this isn't the v0.9.0 regression. Pins became bare markers with hover cards, because ~20 always-open
+`w-44` label cards on one map are unreadable; `MapCardPin` gained `kind` / `label` / `dimmed` /
+`detail`, which also retired the `selectedPinId`-as-lodging-ring hack. Booked and candidate stays now
+draw differently (filled vs outlined), and candidates pin on the Itinerary map too — while still not
+anchoring distances or budget, which remain keyed on `isBookedLodging`.
+
+⚠️ **Two latent bugs were fixed while wiring the day route, both worth remembering.** (1) `FitToPins`
+was gated on `!showRoutes`, where `showRoutes` means `routeDestination && origin` — *not* whether a
+path exists. Passing a `routePath` therefore had `FitToPins` and `PathLayer` both calling
+`fitBounds`, with the viewport decided by whichever effect resolved last. Now gated on
+`!showRoutes && !hasPath`. (2) `PathLayer`'s `path` is an effect dependency, so an unmemoized array
+literal tore down and rebuilt the polyline **and refit the viewport on every render**, fighting the
+user's pan and zoom. The call site memoizes on the ordered stop ids.
+
+**TravelPayouts is gone by decision** — see §7. `searchLodging` went with it; despite living in
+`trip-ai.functions.ts` it called no model, so no AI path is affected.
+
+### v0.11.0 (Day 1 date fix, Transport removed, Activities overhaul) — 2026-08-20
+
+**Not yet verified in a live browser.** Every item below is open in `FEATURE_TRACKING.md`.
+
+**The Day 1 bug is the one worth remembering.** `trips.start_date` is a Postgres `DATE`, which
+serializes as a bare `"YYYY-MM-DD"` string, and `new Date("2026-08-20")` is parsed by the JS spec
+as **UTC midnight** — not local midnight. Rendering that with `.toLocaleDateString()` and no
+`timeZone` option converts back to the browser's zone, so in any US timezone every day label landed
+one calendar day early. Fixed with `dateForDayIndex()` in `workspace-store.ts`, which parses the
+local-safe way `daysUntil()` already did (append `T00:00:00`, no `Z`) and advances with `setDate()`
+rather than millisecond arithmetic, so DST transitions don't shift it either. Every other date
+derivation in the app was audited and found already safe; the bug was isolated to two call sites.
+⚠️ The general rule: **never pass a date-only string to `new Date()`** in this codebase.
+
+**Transport tab deleted** — Drive/Fly/Train comparison, Duffel flights, EIA gas prices, manual
+train entry, plus Trip Details' "Estimated travel time" card and its "Sort out transport" task.
+`DUFFEL_API_KEY` and `EIA_API_KEY` were retired with it. OSRM driving code **stayed** — it is
+shared with the Itinerary tab's distance features. Pre-existing `kind: transport` rows are
+untouched and still count toward budget; there is simply no UI to add more.
+
+**Activities**: the Category field/column/badges were removed (nothing in scheduling ever read
+them) and replaced with a Distance-from-booked-stay column, sortable, reusing the existing
+`useActivityDistances` query rather than fetching again. The Browse dialog's category filters are
+a different thing and were left alone — those drive what Google Places actually searches for. A
+click-to-edit dialog was added, reachable from both the Activities row and the Itinerary card, with
+the Date field locked for already-scheduled activities (their day comes from dragging, so editing
+it there would silently do nothing).
+
+**Link extraction** now reads schema.org JSON-LD with Google Places as backfill, pulling ticket
+price, reservation-required, hours and address. Nothing is inferred: a field neither source
+supplies stays blank, and anything auto-populated carries an "auto-filled" badge. The fetch utility
+was made shared between Activities and Lodging at this point — deliberately not built as a shared
+abstraction until a second real consumer existed.
+
 ### v0.10.0 (itinerary distances: from-stay + leg-by-leg timeline) — 2026-08-19
 
 **Verified end-to-end in a live browser on 2026-08-19** (headless Edge + puppeteer-core, live
@@ -1174,17 +1267,25 @@ ignored; legacy flat-coords rows still plot (the `coordsOf` salvage); pinned arr
 conflict toast; drag-to-schedule; unschedule-not-delete; add block; the no-lodging state; and
 budget totals unchanged from pre-v0.9.0 semantics.
 
+**Nothing in v0.12.0 is verified.** Static gates only. The map changes are the largest such gap the
+project has carried: they cannot be exercised locally at all (no `VITE_GOOGLE_MAPS_KEY`, and
+`localhost:8080` isn't on the key's referrer allowlist), so the pins, the hover cards, the numbering
+and the connector have never been rendered by anything. Checklist in `FEATURE_TRACKING.md`.
+
 ⚠️ **Two gaps remain on v0.9.0.** (1) **Map pins were never seen.** Their existence was inferred
 from the absence of the empty state plus the distance table, which is real evidence but not a
 rendering check — no `VITE_GOOGLE_MAPS_KEY` locally, and `localhost` is not on the key's referrer
 allowlist anyway. Confirm in production. (2) **The straight-line mileage fallback never fired** —
 public OSRM returned road distance every time — so that branch is untested, not passing.
 
-**Not yet verified — v0.6.0 (itinerary timing fix):** the day-start-time field, per-item pinned
-arrival time + its conflict check, the quieter advisor banner, and the chat drawer all need a real
-multi-day trip run-through — none of it has been exercised against a live Supabase project (the
-`day_start_times` migration also hasn't been applied yet). Tracked with checkboxes in
-`FEATURE_TRACKING.md` rather than duplicated here — check that file off as each is confirmed.
+**Mostly superseded — v0.6.0 (itinerary timing fix):** the per-item pinned arrival time and its
+conflict check were **verified 2026-08-19** (see `FEATURE_TRACKING.md`). The day-start-time field,
+the quieter advisor banner and the chat drawer no longer exist — all three were removed in v0.9.0.
+
+The `day_start_times` migration **was** applied (confirmed in commit `3dd617b`, 2026-08-17) and
+then dropped again when the field was removed: `supabase/migrations/` holds both
+`20260817010000_day_start_times.sql` and `20260817020000_drop_day_start_times.sql`. An earlier
+version of this section claimed it "hasn't been applied yet" — that was stale by two releases.
 
 **Verified against live Supabase + real browser (25/25 checks, v0.3.0):** booking exclusivity,
 budget excluding candidates, blank-slate activities, drag persistence across reload, dashboard
@@ -1230,8 +1331,15 @@ Production has these keys, so the quickest check is the live site.
 ## 7. Backlog
 
 **Known broken upstream**
-- **TravelPayouts hotel API is discontinued** (every endpoint 404s, confirmed with a valid token).
-  The panel correctly reports unavailable. A replacement live hotel source is the top item.
+- ~~**TravelPayouts hotel API is discontinued**~~ — **closed by decision in v0.12.0: removed, not
+  replaced.** Every endpoint 404s with a valid token, and it had sat at the top of this list through
+  six releases. `travelpayouts.server.ts`, the `searchLodging` server fn and the entire live-search
+  section of the Lodging tab are deleted; `TRAVELPAYOUTS_API_KEY` is retired, the same way
+  `DUFFEL_API_KEY` and `EIA_API_KEY` were when the Transport tab went. Manual "Add your stay" is the
+  permanent flow — v0.11.0's link-fetch prefill is what made that a real answer rather than a
+  workaround. **Don't reopen this as a bug**: if a live hotel source is wanted again it is new
+  scope, and `LodgingPanel` deliberately no longer accepts the `partySize`/`interests`/`budgetCents`
+  props such a search would need.
 
 **Requested but not built**
 - ~~**Realtime sync for shared trips (Phase 2)**~~ — **shipped in v0.5.0 (B1–B3)**: live sync,
@@ -1245,30 +1353,37 @@ Production has these keys, so the quickest check is the live site.
 - **Owner vs. shared badge** in `trips.index.tsx` — `listTrips` now also returns trips the user
   collaborates on (as of v0.4.0's RLS rewrite), but the list doesn't select `user_id` so there's
   no visual distinction yet.
-- Smart paste for Airbnb/VRBO/Amtrak links → auto-fill the Lodging/Transport forms. Activities
-  got its own paste-a-link fetch in v0.4.0; the shared abstraction wasn't built preemptively —
-  extending it to Lodging/Transport is the natural next step now that it's tested once.
-- No live rail API. Train estimates are a labelled heuristic: road miles ÷ 50 mph + 1h.
+- ~~Smart paste for Airbnb/VRBO/Amtrak links~~ — **done for Lodging in v0.11.0**; the shared fetch
+  utility was extracted then, once a second real consumer existed. The Transport half is moot: that
+  tab no longer exists.
+- ~~No live rail API~~ — moot with the Transport tab, removed in v0.11.0.
+- **Activities redesign** — multi-day suggestions and interest-based ranking, promised in v0.1.0 and
+  then tracked nowhere for ten releases. Recovered into `FEATURE_TRACKING.md` 2026-08-20; see there
+  for which parts v0.11.0 superseded.
 
 **Worth considering**
 - ~~`updateTripItem` once per row on a drag reorder~~ — **done in v0.5.0**: `updateTripItems` applies
   a whole batch in one request, and `reorderMut` uses it. That also made one drag log one activity
   entry instead of N.
-- Migrate all server fns off the deprecated `.inputValidator()` in one pass.
-- The Lodging map, Trip Details map and the new itinerary day map each mount their own
-  `APIProvider`. Harmless, but a shared provider higher in the tree would be cleaner — now three
-  call sites rather than two.
+- Migrate all server fns off the deprecated `.inputValidator()` in one pass. **Scoped into v0.12.0
+  and pulled back out** — it touches every server function, and bundling it into a large release
+  that ships straight to production buys risk for no urgency.
+- The Lodging map, Trip Details map and the itinerary map each mount their own `APIProvider`.
+  ⚠️ **Scoped into v0.12.0 and pulled back out, for a reason worth writing down:** this looks like a
+  tidy-up inside the trip workspace, but `place-autocomplete.tsx` mounts a fourth provider on the
+  **landing page** (`routes/index.tsx`), so collapsing to one means hoisting to the root — changing
+  how the Maps API loads for the entire app. Nothing in `tsc`/`eslint`/`build` can check that, and
+  maps don't render locally (see §6), so it would ship unverifiable. Do it alone, against a preview
+  deploy, not folded into map feature work.
 - **Proxy-cache the Places photos.** `/api/places/photo` sets a 24h immutable `Cache-Control`, so
   browsers and the CDN cache it, but every cold miss still costs a Places photo request. If imagery
   volume grows, cache the bytes rather than only the response.
 
 **Housekeeping**
-- **`npm audit` reports 4 transitive advisories** (2026-08-16): `brace-expansion`, `js-yaml`,
-  `nanoid` (high) and `postcss` (moderate). All are DoS or build-tooling issues, none is a direct
-  dependency, and every one reports `fixAvailable: true` — so plain `npm audit fix` should clear
-  them without a forced major bump. Left alone deliberately rather than folded into an unrelated
-  change. Re-run all three static gates afterwards: these sit under Vite/ESLint, so a bad bump
-  surfaces as a build failure, not a test failure.
+- ~~**`npm audit` reports 4 transitive advisories**~~ — **done 2026-08-20.** `npm audit fix` cleared
+  all four (`brace-expansion`, `js-yaml`, `nanoid`, `postcss`) to `found 0 vulnerabilities`. It
+  touched `package-lock.json` only — no `package.json` change, no major bumps — and all three static
+  gates passed afterwards, which is the check that matters since these sit under Vite/ESLint.
 - ⚠️ **Four `claude-*` verification users from the v0.9.0 and v0.10.0 passes are still in Supabase
   auth** (2026-08-19). Every trip and `trip_items` row they owned was deleted via the owner's own
   JWT and confirmed gone (`trips` and `trip_items` both return `[]`), so **no orphan data
@@ -1289,16 +1404,29 @@ Production has these keys, so the quickest check is the live site.
   only a throwaway account's password, so leave it in place between passes; it lives in a
   session-scoped temp directory and disappears on its own. The durable fix is the service-role
   key, which would let cleanup delete the account outright.
+
+  **Re-checked 2026-08-20 and still blocked, for the same reason.** The v0.12.0 pass ran in a fresh
+  clone with no `.env` and no Supabase values in the environment, so the four accounts could not be
+  deleted. Not a new failure — the same missing `SUPABASE_SERVICE_ROLE_KEY`. Note the count did
+  **not** grow this pass: no verification users were created, because nothing was verified in a
+  browser.
 - ~~Leftover `claude-*` verification users in Supabase auth.~~ **Done 2026-08-17** — all 10
   (3 from v0.4.0, 7 from v0.5.0) deleted via `auth/v1/admin/users` with the service-role key, which
   is now in `.env`. Zero `claude-*` accounts remain. Future test users can be scripted away the
   same way rather than accumulating.
-- **`src/integrations/supabase/types.ts` now carries THREE hand-added tables** —
-  `trip_collaborators`, `trip_invites` (v0.4.0) and `trip_activity` (v0.5.0) — each marked inline.
-  The file header says "do not edit directly". Worth one `supabase gen types typescript` pass to
-  retire all three at once. ⚠️ `supabase/config.toml` pins a **dead** project ref
-  (`mocvqmruxvpwgnxiszmc`, no DNS) while the app uses `cxonflruhbypxfonjtes`, so fix that first or
-  the CLI will appear broken for unrelated reasons.
+- **`src/integrations/supabase/types.ts` still carries THREE hand-added tables** —
+  `trip_collaborators`, `trip_invites` (v0.4.0) and `trip_activity` (v0.5.0) — each marked inline,
+  in a file whose header says "do not edit directly". One `supabase gen types typescript` pass
+  retires all three.
+
+  ✅ The dead project ref in `supabase/config.toml` (`mocvqmruxvpwgnxiszmc`, no DNS) was corrected to
+  `cxonflruhbypxfonjtes` on 2026-08-20, so the CLI no longer *looks* broken for unrelated reasons.
+
+  ⚠️ **The regen itself is still open, and it was attempted.** `npx supabase gen types typescript
+  --project-id cxonflruhbypxfonjtes` returns `LegacyPlatformAuthRequiredError: Access token not
+  provided`. It needs `supabase login` or `SUPABASE_ACCESS_TOKEN`, neither of which exists on this
+  machine — there is no `.env` in the repo at all and no Supabase variables in the environment.
+  Recorded as tried-and-blocked rather than untried.
 - **`http://localhost:8080` is not on the Maps browser key's referrer allowlist**, so the itinerary
   day map falls back to "Map key was rejected" in local dev while working in production. One line
   in the Cloud Console fixes it.

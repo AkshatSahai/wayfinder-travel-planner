@@ -1,12 +1,9 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { searchLodging } from "@/lib/trip-ai.functions";
-import { geocodeLabels } from "@/lib/places.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ProviderSetupCard } from "./provider-setup-card";
 import { PlaceAutocomplete } from "./place-autocomplete";
 import { DestinationMap, type MapCardPin } from "./destination-map";
 import {
@@ -20,15 +17,14 @@ import { toast } from "sonner";
 import {
   Plus,
   ExternalLink,
-  Star,
   Home,
-  Hotel,
   Check,
   ArrowUpDown,
   Trash2,
   Link as LinkIcon,
 } from "lucide-react";
 import { fetchLinkMetadata } from "@/lib/url-metadata.functions";
+import { useStayCoords } from "@/hooks/use-stay-coords";
 import {
   formatMoney,
   daysBetween,
@@ -52,15 +48,18 @@ type NewStay = {
   source_url?: string;
 };
 
+/**
+ * ⚠️ No `partySize`, `interests` or `budgetCents` here any more. They existed
+ * only to parameterise the live hotel search removed in v0.12.0 — nothing in
+ * manual entry reads them. Adding them back means you're reintroducing a search
+ * provider; see context.md §7 before doing that.
+ */
 interface Props {
   destination: string;
   origin: string;
   originCoords: LatLng | null;
   startDate: string | null;
   endDate: string | null;
-  partySize: number;
-  interests: string[];
-  budgetCents: number | null;
   /** Every lodging row on this trip — candidates and the booked stay alike. */
   stays: Item[];
   onAdd: (item: NewStay) => void;
@@ -73,10 +72,6 @@ type SortKey = "title" | "location" | "distance" | "cost";
 const stayDetails = (s: Item) => (s.details ?? {}) as Record<string, unknown>;
 const stayLocation = (s: Item) => (stayDetails(s).location as string | undefined) ?? "";
 const staySource = (s: Item) => (stayDetails(s).source as string | undefined) ?? "manual";
-const stayCoords = (s: Item): LatLng | null => {
-  const c = stayDetails(s).coords as LatLng | undefined;
-  return c && typeof c.lat === "number" && typeof c.lng === "number" ? c : null;
-};
 
 export function LodgingPanel({
   destination,
@@ -84,35 +79,12 @@ export function LodgingPanel({
   originCoords,
   startDate,
   endDate,
-  partySize,
-  interests,
-  budgetCents,
   stays,
   onAdd,
   onBook,
   onRemove,
 }: Props) {
-  const fn = useServerFn(searchLodging);
-  const geocodeFn = useServerFn(geocodeLabels);
   const nights = Math.max(1, daysBetween(startDate, endDate) - 1);
-
-  const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ["lodging", destination, startDate, endDate, partySize],
-    queryFn: () =>
-      fn({
-        data: {
-          destination,
-          start_date: startDate,
-          end_date: endDate,
-          party_size: partySize,
-          interests,
-          budget_cents: budgetCents,
-        },
-      }),
-    enabled: destination.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
 
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
@@ -154,23 +126,9 @@ export function LodgingPanel({
   const urlLooksValid = /^https?:\/\/.+/i.test(url.trim());
 
   // Stays saved before coordinates existed (or whose geocode failed) still need
-  // a pin and a distance, so backfill them from their stored location text.
-  const ungeocoded = stays.filter((s) => !stayCoords(s) && stayLocation(s));
-  const ungeocodedKey = ungeocoded.map((s) => stayLocation(s)).join("|");
-  const { data: geocoded } = useQuery({
-    queryKey: ["stay-coords", ungeocodedKey],
-    queryFn: () => geocodeFn({ data: { labels: ungeocoded.map((s) => stayLocation(s)) } }),
-    enabled: ungeocoded.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  });
-
-  const coordsFor = (s: Item): LatLng | null => {
-    const stored = stayCoords(s);
-    if (stored) return stored;
-    const hit = geocoded?.results.find((r) => r.label === stayLocation(s));
-    return hit?.coords ?? null;
-  };
+  // a pin and a distance. Shared with the Itinerary map so the two surfaces
+  // can't disagree about where a stay is — see `use-stay-coords.ts`.
+  const { coordsFor, coordsKey } = useStayCoords(stays);
 
   const rows = useMemo(() => {
     const mapped = stays.map((s) => {
@@ -199,14 +157,19 @@ export function LodgingPanel({
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stays, geocoded, originCoords, sortKey, sortAsc]);
+  }, [stays, coordsKey, originCoords, sortKey, sortAsc]);
 
+  // Booked and comparison stays both pin, drawn differently. Seeing where each
+  // option actually sits is most of the point of comparing them, and until
+  // v0.12.0 the only signal was the word "Booked" buried in a subtitle.
   const pins: MapCardPin[] = rows
     .filter((r) => r.coords)
     .map((r) => ({
       id: r.item.id,
       name: r.item.title,
       subtitle: `${formatMoney(r.item.cost_cents ?? 0)}${r.booked ? " · Booked" : ""}`,
+      detail: `${formatMoney(r.item.cost_cents ?? 0)}${r.booked ? " · Booked" : " · Comparing"}`,
+      kind: r.booked ? ("lodging-booked" as const) : ("lodging-candidate" as const),
       lat: r.coords!.lat,
       lng: r.coords!.lng,
     }));
@@ -227,10 +190,6 @@ export function LodgingPanel({
         Pick a destination first.
       </div>
     );
-
-  const missingKey = data?.error?.includes("TRAVELPAYOUTS_API_KEY missing")
-    ? "TRAVELPAYOUTS_API_KEY"
-    : null;
 
   const addStay = (stay: Omit<NewStay, "kind" | "category" | "day_index">) =>
     onAdd({ ...stay, kind: "lodging", category: LODGING_CANDIDATE, day_index: 0 });
@@ -370,7 +329,7 @@ export function LodgingPanel({
           </h3>
           {rows.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-              No stays yet. Add one above, or pull one in from the live hotel search below.
+              No stays yet. Add one above — paste a listing link and we&apos;ll fill in what we can.
             </div>
           ) : (
             <div className="overflow-x-auto rounded-2xl border border-border bg-card shadow-soft">
@@ -474,118 +433,10 @@ export function LodgingPanel({
             routeDestination={null}
             origin={null}
             waypoints={[]}
+            pinStyle="pin"
             selectedPinId={openStayId}
             onPinClick={(p) => setOpenStayId(p.id)}
           />
-        </div>
-      </section>
-
-      {/* ---- Live hotel search feeds the same comparison list ---- */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Hotel className="h-5 w-5 text-primary" />
-            <div>
-              <h3 className="font-display text-lg font-semibold">Live hotel search</h3>
-              <p className="text-xs text-muted-foreground">
-                Results add into the comparison table above.
-              </p>
-            </div>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-            {isFetching ? "…" : "Refresh"}
-          </Button>
-        </div>
-
-        {isLoading && <div className="h-40 animate-pulse rounded-2xl bg-muted/40" />}
-
-        {missingKey && <ProviderSetupCard missingKey={missingKey} />}
-
-        {data?.error && !missingKey && data.listings.length === 0 && !isLoading && (
-          <div className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            <p>Live hotel search is unavailable right now.</p>
-            <p className="mt-1 text-xs">{data.error}</p>
-            <Button size="sm" variant="outline" className="mt-3" onClick={() => refetch()}>
-              Retry
-            </Button>
-          </div>
-        )}
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          {data?.listings.map((l) => {
-            const total = l.nightly_cents * nights;
-            return (
-              <div
-                key={l.name}
-                className="overflow-hidden rounded-2xl border border-border bg-card shadow-card transition-shadow hover:shadow-glow"
-              >
-                {l.photo_url && (
-                  <img
-                    src={l.photo_url}
-                    alt={l.name}
-                    loading="lazy"
-                    className="h-40 w-full object-cover"
-                  />
-                )}
-                <div className="p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h4 className="truncate font-semibold">{l.name}</h4>
-                      <p className="text-xs text-muted-foreground">{l.neighborhood}</p>
-                    </div>
-                    {l.rating != null && (
-                      <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-600">
-                        <Star className="h-3 w-3 fill-current" />
-                        {l.rating}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-3 flex items-end justify-between">
-                    <div>
-                      <span className="font-display text-lg font-semibold">
-                        {formatMoney(l.nightly_cents)}
-                      </span>
-                      <span className="text-xs text-muted-foreground"> / night</span>
-                      <p className="text-xs text-muted-foreground">{formatMoney(total)} total</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {l.source_url && (
-                        <a
-                          href={l.source_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-muted-foreground hover:text-foreground"
-                          title="View listing"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
-                      )}
-                      <Button
-                        size="sm"
-                        onClick={() =>
-                          addStay({
-                            title: l.name,
-                            subtitle: `${l.type} · ${l.neighborhood}`,
-                            cost_cents: total,
-                            details: {
-                              ...l,
-                              nights,
-                              location: `${l.neighborhood}, ${destination}`,
-                              source: "live",
-                            },
-                            source_url: l.source_url ?? undefined,
-                          })
-                        }
-                      >
-                        <Plus className="mr-1 h-3 w-3" />
-                        Compare
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
         </div>
       </section>
 
